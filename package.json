@@ -1,0 +1,8 @@
+{
+  "name": "animevist-telegram-bot",
+  "version": "1.0.0",
+  "description": "AnimeVist Telegram Bot with Supabase sync and episode notifications",
+  "main": "handlers/message.js",
+  "dependencies": {},
+  "devDependencies": {}
+}
