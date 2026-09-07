@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  animevist-bot:
+    build: .
+    container_name: animevist_telegram_bot
+    restart: always
+    volumes:
+      - ./seen_episodes.json:/app/seen_episodes.json
+      - ./seen_news.json:/app/seen_news.json
+      - ./config.json:/app/config.json

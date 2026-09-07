@@ -1,0 +1,3 @@
+# AnimeVist Telegram Automation Bot
+# Чистый Python 3.8+ с библиотекой Pillow для генерации фотоколлажей подборок
+Pillow>=10.0.0

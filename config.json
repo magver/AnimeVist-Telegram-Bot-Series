@@ -1,0 +1,34 @@
+﻿{
+    "telegram":  {
+                     "bot_token":  "8930810232:AAE3lPqk1X6061aRIkC0zBaEeK6e_nb3U8o",
+                     "channel_id":  "-1004465332635",
+                     "admin_id":  "869155357",
+                     "discussion_chat_id":  "-1004381970013",
+                     "pinned_message_id":  8
+                 },
+    "app":  {
+                "name":  "AnimeVist",
+                "github_repo":  "magver/AnimeVist-Releases",
+                "download_page_url":  "https://github.com/magver/AnimeVist-Releases/releases/latest",
+                "chat_invite_url":  "https://t.me/animevist_chat"
+            },
+    "announcer":  {
+                      "check_interval_seconds":  300,
+                      "enable_series_releases":  true,
+                      "enable_anime_news":  true,
+                      "max_releases_per_cycle":  3,
+                      "enable_compilations":  true,
+                      "compilations_interval_hours":  6,
+                      "include_genre_hashtags":  true,
+                      "show_chat_button":  false
+                  },
+    "cloud_storage":  {
+                          "provider":  "supabase",
+                          "telegram_storage_chat_id":  "869155357",
+                          "upstash_rest_url":  "",
+                          "upstash_rest_token":  "",
+                          "supabase_url":  "https://zuciuwunelfqhhhohhyn.supabase.co",
+                          "supabase_key":  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1Y2l1d3VuZWxmcWhoaG9oaHluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgwODgwOTcsImV4cCI6MjEwMzY2NDA5N30.JTxCO-GWXtLLBWLwE5I6AsmXvKrGNGQ9J6sS7QM4ITQ",
+                          "last_sync":  "2026-09-06 00:45:01"
+                      }
+}

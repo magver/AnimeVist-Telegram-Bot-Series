@@ -1,0 +1,16 @@
+@echo off
+title AnimeVist Web Dashboard
+cd /d "%~dp0"
+
+where python >nul 2>nul
+if errorlevel 1 (
+    if exist "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" (
+        set "PATH=%LOCALAPPDATA%\Programs\Python\Python311;%LOCALAPPDATA%\Programs\Python\Python311\Scripts;%PATH%"
+    )
+)
+
+python web_dashboard.py
+if errorlevel 1 (
+    echo [ERROR] Failed to start web dashboard.
+    pause
+)

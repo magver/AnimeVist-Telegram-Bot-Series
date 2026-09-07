@@ -1,0 +1,95 @@
+name: Manual Actions (Web Panel in GitHub)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Выберите действие для запуска:'
+        required: true
+        default: 'check_releases'
+        type: choice
+        options:
+          - 'check_releases'
+          - 'check_news'
+          - 'publish_compilation'
+          - 'publish_patchnote'
+          - 'pin_navigator'
+          - 'test_bot_connection'
+      genre:
+        description: 'Тема подборки (только для publish_compilation, auto = следующая по очереди):'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - 'auto'
+          - 'must_watch'
+          - 'hidden_gems'
+          - 'mindfuck'
+          - 'cyberpunk_scifi'
+          - 'epic_fantasy'
+          - 'soul_romance'
+          - 'pure_comedy'
+          - 'isekai_special'
+      count:
+        description: 'Количество тайтлов в подборке (будут объединены в единый постер-коллаж):'
+        required: false
+        default: '4'
+        type: choice
+        options:
+          - '3'
+          - '4'
+          - '5'
+
+jobs:
+  execute-action:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Execute selected action
+        run: |
+          ACTION="${{ github.event.inputs.action }}"
+          GENRE="${{ github.event.inputs.genre }}"
+          COUNT="${{ github.event.inputs.count }}"
+          echo "Executing action: $ACTION with genre: $GENRE, count: $COUNT"
+          if [ "$ACTION" = "check_releases" ]; then
+            python series_announcer.py
+          elif [ "$ACTION" = "check_news" ]; then
+            python news_announcer.py
+          elif [ "$ACTION" = "publish_compilation" ]; then
+            if [ "$GENRE" = "auto" ] || [ -z "$GENRE" ]; then
+              python compilations_announcer.py --count="$COUNT"
+            else
+              python compilations_announcer.py --genre="$GENRE" --count="$COUNT"
+            fi
+          elif [ "$ACTION" = "publish_patchnote" ]; then
+            python patchnote_publisher.py
+          elif [ "$ACTION" = "pin_navigator" ]; then
+            python pinned_navigator.py
+          elif [ "$ACTION" = "test_bot_connection" ]; then
+            python main.py --test
+          fi
+
+      - name: Commit state changes if any
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_episodes.json seen_news.json seen_compilations.json seen_compilation_animes.json last_compilation_time.json config.json || true
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "Manual action state update [skip ci]"
+            git push
+          fi

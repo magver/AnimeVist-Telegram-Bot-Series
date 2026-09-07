@@ -1,0 +1,46 @@
+name: AnimeVist 24/7 Cloud Automation
+
+on:
+  schedule:
+    # Runs automatically every 15 minutes 24/7 without needing a PC!
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # Allows manual trigger with 1 click from GitHub UI
+
+jobs:
+  run-automation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Series Announcer (#онгоинг)
+        run: python series_announcer.py
+
+      - name: Run Anime News Announcer (#новости)
+        run: python news_announcer.py
+
+      - name: Run Compilations if due (#подборка)
+        run: python compilations_announcer.py --auto-if-due
+
+      - name: Save and commit updated state
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add seen_episodes.json seen_news.json seen_compilations.json seen_compilation_animes.json last_compilation_time.json config.json || true
+          if git diff --staged --quiet; then
+            echo "No new updates to save."
+          else
+            git commit -m "Auto-update seen state [skip ci]"
+            git push
+          fi
