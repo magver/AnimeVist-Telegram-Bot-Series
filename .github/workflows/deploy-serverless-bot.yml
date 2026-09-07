@@ -1,0 +1,41 @@
+name: Deploy AnimeVist Telegram Serverless Bot
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'handlers/**'
+      - 'lib/**'
+      - 'schema.js'
+      - 'package.json'
+  workflow_dispatch:
+
+jobs:
+  deploy-serverless:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install tgcloud CLI
+        run: |
+          npm install -g @tgcloud/cli@0.1.2
+
+      - name: Configure tgcloud with bot token
+        env:
+          TGCLOUD_TOKEN: ${{ secrets.TGCLOUD_TOKEN }}
+        run: |
+          echo "TGCLOUD_TOKEN is set: app${{ secrets.TGCLOUD_TOKEN:0:5 }}..."
+
+      - name: Deploy modules to Telegram Serverless
+        env:
+          TGCLOUD_TOKEN: ${{ secrets.TGCLOUD_TOKEN }}
+        run: |
+          tgcloud push --yes
