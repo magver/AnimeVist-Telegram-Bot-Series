@@ -34,8 +34,13 @@ jobs:
         run: |
           echo "TGCLOUD_TOKEN is set: app${{ secrets.TGCLOUD_TOKEN:0:5 }}..."
 
-      - name: Deploy modules to Telegram Serverless
+      - name: Login to tgcloud
         env:
           TGCLOUD_TOKEN: ${{ secrets.TGCLOUD_TOKEN }}
+        run: |
+          mkdir -p .tgcloud
+          echo "$TGCLOUD_TOKEN" > .tgcloud/credentials
+
+      - name: Deploy modules to Telegram Serverless
         run: |
           tgcloud push --yes
