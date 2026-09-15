@@ -36,12 +36,14 @@
     "include_genre_hashtags": true
   },
   "cloud_storage": {
-    "provider": "supabase",
+    "provider": "turso",
     "telegram_storage_chat_id": "869155357",
     "upstash_rest_url": "",
     "upstash_rest_token": "",
     "supabase_url": "https://zuciuwunelfqhhhohhyn.supabase.co",
     "supabase_key": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp1Y2l1d3VuZWxmcWhoaG9oaHluIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgwODgwOTcsImV4cCI6MjEwMzY2NDA5N30.JTxCO-GWXtLLBWLwE5I6AsmXvKrGNGQ9J6sS7QM4ITQ",
+    "turso_url": "https://animevist-db-animevist-db.aws-ap-northeast-1.turso.io",
+    "turso_token": "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODk1MDE3MDQsImlkIjoiMDFhMGE2OWItZGIwMS03MDg1LTlhNWEtZjFhZDdlMmUxZTkzIiwia2lkIjoiQ29rcXY2YTA3ZWNIcjFYQW0zNXVXUUgwUmVHYnZmWWpkX1g5MVBoa3FWWSIsInJpZCI6Ijk5NzFlZTg1LWNkM2UtNDE1OC05MGIwLWJkNjY5YTdkZGQyOCJ9.KDgVTTb6YHmThFAE30ypHwZ6fCea7xmhxgQtzcm_GoZ2kNd6aChQCxHmfv4TRZycZJPXcbmzGAiHdLDPlFhTAA",
     "last_sync": "2026-09-15 17:13:48"
   }
 }

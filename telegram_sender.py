@@ -56,6 +56,8 @@ def get_default_config():
             "upstash_rest_token": "",
             "supabase_url": "",
             "supabase_key": "",
+            "turso_url": "",
+            "turso_token": "",
             "last_sync": None
         }
     }
@@ -116,6 +118,10 @@ def load_config():
         cloud['supabase_url'] = os.environ.get("SUPABASE_URL")
     if os.environ.get("SUPABASE_KEY"):
         cloud['supabase_key'] = os.environ.get("SUPABASE_KEY")
+    if os.environ.get("TURSO_URL") or os.environ.get("TURSO_DATABASE_URL"):
+        cloud['turso_url'] = os.environ.get("TURSO_URL") or os.environ.get("TURSO_DATABASE_URL")
+    if os.environ.get("TURSO_TOKEN") or os.environ.get("TURSO_AUTH_TOKEN"):
+        cloud['turso_token'] = os.environ.get("TURSO_TOKEN") or os.environ.get("TURSO_AUTH_TOKEN")
 
     return conf
 
@@ -138,7 +144,13 @@ def sync_config_to_cloud(conf=None):
         conf = load_config()
     provider = conf.get('cloud_storage', {}).get('provider', 'local')
     
-    if provider == 'telegram':
+    if provider == 'turso':
+        try:
+            from turso_db import sync_config_to_turso
+            return sync_config_to_turso(conf)
+        except Exception as e:
+            return {"ok": False, "error": f"Turso sync error: {e}"}
+    elif provider == 'telegram':
         return sync_config_to_telegram(conf)
     elif provider == 'upstash':
         return sync_config_to_upstash(conf)
@@ -348,10 +360,38 @@ def fetch_config_from_supabase(conf=None):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def fetch_config_from_cloud(conf=None):
+    if conf is None:
+        conf = load_config()
+    provider = conf.get('cloud_storage', {}).get('provider', 'local')
+    if provider == 'turso':
+        try:
+            from turso_db import fetch_config_from_turso
+            res = fetch_config_from_turso()
+            if res.get('ok') and 'config' in res:
+                save_config(res['config'], sync_to_cloud=False)
+            return res
+        except Exception as e:
+            return {"ok": False, "error": f"Turso fetch error: {e}"}
+    elif provider == 'supabase':
+        return fetch_config_from_supabase(conf)
+    elif provider == 'upstash':
+        return fetch_config_from_upstash(conf)
+    elif provider == 'telegram':
+        return fetch_config_from_telegram(conf)
+    return {"ok": True, "config": conf}
+
 def load_seen_from_supabase(category='episode', days=None):
     conf = load_config()
-    url = conf.get('cloud_storage', {}).get('supabase_url')
-    key = conf.get('cloud_storage', {}).get('supabase_key')
+    cloud = conf.get('cloud_storage', {})
+    if cloud.get('provider') == 'turso' or (cloud.get('turso_url') and cloud.get('turso_token')):
+        try:
+            from turso_db import load_seen_from_turso
+            return set(load_seen_from_turso(category=category, days=days or 30))
+        except Exception as e:
+            print(f"[Seen] Turso load error: {e}")
+    url = cloud.get('supabase_url')
+    key = cloud.get('supabase_key')
     if not url or not key:
         return set()
     endpoint = f"{url.rstrip('/')}/rest/v1/bot_seen_items?category=eq.{category}&select=item_id,created_at&limit=1000"
@@ -372,8 +412,15 @@ def load_seen_from_supabase(category='episode', days=None):
 
 def save_seen_to_supabase(item_ids, category='episode'):
     conf = load_config()
-    url = conf.get('cloud_storage', {}).get('supabase_url')
-    key = conf.get('cloud_storage', {}).get('supabase_key')
+    cloud = conf.get('cloud_storage', {})
+    if cloud.get('provider') == 'turso' or (cloud.get('turso_url') and cloud.get('turso_token')):
+        try:
+            from turso_db import save_seen_to_turso
+            return save_seen_to_turso(item_ids, category=category)
+        except Exception as e:
+            print(f"[Seen] Turso save error: {e}")
+    url = cloud.get('supabase_url')
+    key = cloud.get('supabase_key')
     if not url or not key or not item_ids:
         return False
     import datetime
@@ -396,6 +443,18 @@ def save_seen_to_supabase(item_ids, category='episode'):
             return True
     except Exception:
         return False
+
+def test_turso_connection(conf=None):
+    try:
+        from turso_db import TursoClient
+        client = TursoClient()
+        if not client.is_configured():
+            return {"ok": False, "error": "Turso URL или Auth Token не настроены"}
+        rows = client.execute("SELECT sqlite_version();")
+        ver = rows[0].get('sqlite_version()') if rows else 'ok'
+        return {"ok": True, "message": f"Подключение к базе Turso успешно (libSQL v{ver}, 200 OK)!"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 def test_supabase_connection(conf=None):
     if conf is None:

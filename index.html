@@ -1176,8 +1176,8 @@
               <span style="font-family:var(--font-mono); color:var(--accent-amber);" id="statNextComp">—</span>
             </div>
             <div style="display:flex; justify-content:space-between; padding-bottom:6px; border-bottom:1px solid var(--border-subtle); font-size:0.85rem;">
-              <span style="color:var(--text-secondary);">Облачная БД Supabase:</span>
-              <span style="color:var(--accent-emerald); font-weight:600;" id="statSupabase">Подключено (200 OK)</span>
+              <span style="color:var(--text-secondary);">Облачная БД:</span>
+              <span style="color:var(--accent-cyan); font-weight:600;" id="statSupabase">Turso (libSQL 200 OK)</span>
             </div>
           </div>
 
@@ -1208,7 +1208,11 @@
               <strong style="color:var(--accent-emerald); font-size:1.1rem;" id="botTabTotalSubs">0</strong>
             </div>
             <div style="display:flex; justify-content:space-between; padding-bottom:8px; border-bottom:1px solid var(--border-subtle);">
-              <span style="color:var(--text-secondary);">Механизм аутентификации:</span>
+              <span style="color:var(--text-secondary);">База подписчиков:</span>
+              <span style="font-family:var(--font-mono); color:var(--accent-cyan);">Turso libSQL Serverless</span>
+            </div>
+            <div style="display:flex; justify-content:space-between; padding-bottom:8px; border-bottom:1px solid var(--border-subtle);">
+              <span style="color:var(--text-secondary);">Аутентификация приложения:</span>
               <span style="font-family:var(--font-mono); color:#fff;">Supabase GoTrue (Email + Password)</span>
             </div>
             <div style="display:flex; justify-content:space-between; padding-bottom:8px; border-bottom:1px solid var(--border-subtle);">
@@ -1505,24 +1509,56 @@
         </div>
 
         <div class="card">
-          <div class="card-title">☁️ Облачное Хранилище Supabase</div>
-          <div class="card-subtitle">Синхронизация конфигурации, истории серий и подписок:</div>
+          <div class="card-title">⚡ Облачная База Данных (Turso & Supabase)</div>
+          <div class="card-subtitle">Хранение конфигурации, истории серий и подписчиков без ошибок и ограничений:</div>
 
           <div class="form-group">
-            <label class="form-label"><span>Supabase URL:</span></label>
-            <input type="text" id="cfgSupabaseUrl" placeholder="https://xyz.supabase.co">
+            <label class="form-label"><span>Основной провайдер БД:</span></label>
+            <select id="cfgCloudProvider" style="width:100%; padding:9px 12px; background:var(--bg-input); border:1px solid var(--border-default); border-radius:var(--radius-md); color:#fff; font-size:0.88rem; outline:none;">
+              <option value="turso">Turso.tech (libSQL / SQLite Serverless) — Рекомендуется (Free, без 409 ошибок)</option>
+              <option value="supabase">Supabase (PostgreSQL)</option>
+              <option value="local">Только локальное хранилище (без облака)</option>
+            </select>
           </div>
 
-          <div class="form-group">
-            <label class="form-label"><span>Supabase Anon / Service Key:</span></label>
-            <div class="input-wrap-pw">
-              <input type="password" id="cfgSupabaseKey" placeholder="eyJhbGciOi...">
-              <button class="pw-toggle" onclick="togglePasswordVisibility('cfgSupabaseKey')">👁️</button>
+          <div id="tursoSettingsBlock" style="margin-top:10px;">
+            <div class="form-group">
+              <label class="form-label"><span>Turso Database URL:</span></label>
+              <input type="text" id="cfgTursoUrl" placeholder="https://animevist-db-....turso.io">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label"><span>Turso Auth Token:</span></label>
+              <div class="input-wrap-pw">
+                <input type="password" id="cfgTursoToken" placeholder="eyJhbGciOi...">
+                <button class="pw-toggle" onclick="togglePasswordVisibility('cfgTursoToken')">👁️</button>
+              </div>
             </div>
           </div>
 
+          <details style="margin-top:12px; padding:10px; background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); border-radius:var(--radius-sm);">
+            <summary style="cursor:pointer; font-size:0.82rem; color:var(--text-secondary); font-weight:600;">
+              🔐 Настройки Supabase (GoTrue Auth для пользователей приложения)
+            </summary>
+            <div style="margin-top:10px;">
+              <div class="form-group">
+                <label class="form-label"><span>Supabase URL:</span></label>
+                <input type="text" id="cfgSupabaseUrl" placeholder="https://xyz.supabase.co">
+              </div>
+
+              <div class="form-group">
+                <label class="form-label"><span>Supabase Anon / Service Key:</span></label>
+                <div class="input-wrap-pw">
+                  <input type="password" id="cfgSupabaseKey" placeholder="eyJhbGciOi...">
+                  <button class="pw-toggle" onclick="togglePasswordVisibility('cfgSupabaseKey')">👁️</button>
+                </div>
+              </div>
+            </div>
+          </details>
+
           <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
-            <button class="btn btn-secondary btn-sm" onclick="testSupabase()">🔌 Проверить БД</button>
+            <button class="btn btn-secondary btn-sm" onclick="testTurso()">🔌 Проверить Turso</button>
+            <button class="btn btn-outline btn-sm" onclick="testSupabase()">🔑 Проверить Supabase</button>
             <button class="btn btn-outline btn-sm" onclick="syncCloud()">☁️ Сохранить в облако</button>
             <button class="btn btn-outline btn-sm" onclick="fetchCloud()">📥 Восстановить</button>
           </div>
@@ -1887,6 +1923,20 @@
         if (data.config) {
           currentConfig = data.config;
           populateConfig(data.config);
+          const c = data.config.cloud_storage || {};
+          const statEl = document.getElementById('statSupabase');
+          if (statEl) {
+            if (c.provider === 'turso' || (c.turso_url && c.turso_token)) {
+              statEl.textContent = 'Turso (libSQL 200 OK)';
+              statEl.style.color = 'var(--accent-cyan)';
+            } else if (c.provider === 'supabase' || c.supabase_url) {
+              statEl.textContent = 'Supabase (200 OK)';
+              statEl.style.color = 'var(--accent-emerald)';
+            } else {
+              statEl.textContent = 'Локально';
+              statEl.style.color = 'var(--text-secondary)';
+            }
+          }
         }
 
         if (data.logs) {
@@ -1908,6 +1958,15 @@
       document.getElementById('cfgDiscussionId').value = tg.discussion_chat_id || '';
       document.getElementById('cfgAdminId').value = tg.admin_id || '';
 
+      if (document.getElementById('cfgCloudProvider')) {
+        document.getElementById('cfgCloudProvider').value = cloud.provider || 'turso';
+      }
+      if (document.getElementById('cfgTursoUrl')) {
+        document.getElementById('cfgTursoUrl').value = cloud.turso_url || '';
+      }
+      if (document.getElementById('cfgTursoToken')) {
+        document.getElementById('cfgTursoToken').value = cloud.turso_token || '';
+      }
       document.getElementById('cfgSupabaseUrl').value = cloud.supabase_url || '';
       document.getElementById('cfgSupabaseKey').value = cloud.supabase_key || '';
 
@@ -1965,6 +2024,16 @@
       } catch (e) { showToast('Ошибка автопоиска', 'error'); }
     }
 
+    async function testTurso() {
+      showToast('Проверка подключения к Turso...', 'info');
+      try {
+        const res = await fetch('/api/test-turso', { method: 'POST' });
+        const d = await res.json();
+        if (d.ok) showToast('✅ ' + (d.message || 'Подключение к Turso успешно!'), 'success');
+        else showToast('❌ Ошибка Turso: ' + d.error, 'error');
+      } catch (e) { showToast('Ошибка соединения с Turso: ' + e, 'error'); }
+    }
+
     async function testSupabase() {
       showToast('Проверка подключения к Supabase...', 'info');
       try {
@@ -2001,6 +2070,9 @@
         channel_id: document.getElementById('cfgChannelId').value.trim(),
         discussion_chat_id: document.getElementById('cfgDiscussionId').value.trim(),
         admin_id: document.getElementById('cfgAdminId').value.trim(),
+        provider: document.getElementById('cfgCloudProvider') ? document.getElementById('cfgCloudProvider').value : 'turso',
+        turso_url: document.getElementById('cfgTursoUrl') ? document.getElementById('cfgTursoUrl').value.trim() : '',
+        turso_token: document.getElementById('cfgTursoToken') ? document.getElementById('cfgTursoToken').value.trim() : '',
         supabase_url: document.getElementById('cfgSupabaseUrl').value.trim(),
         supabase_key: document.getElementById('cfgSupabaseKey').value.trim(),
         app_name: document.getElementById('cfgAppName').value.trim(),

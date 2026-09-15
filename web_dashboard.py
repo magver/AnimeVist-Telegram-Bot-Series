@@ -25,7 +25,9 @@ from telegram_sender import (
     sync_config_to_cloud,
     sync_config_to_supabase,
     fetch_config_from_supabase,
-    test_supabase_connection
+    fetch_config_from_cloud,
+    test_supabase_connection,
+    test_turso_connection
 )
 from series_announcer import run_series_check, get_recent_releases_for_preview, publish_single_custom_episode
 from news_announcer import run_news_check, collect_multi_source_news, publish_single_custom_news, get_recent_news_for_preview
@@ -358,6 +360,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if 'supabase_url' in data: cloud['supabase_url'] = data['supabase_url']
             if 'supabase_key' in data: cloud['supabase_key'] = data['supabase_key']
+            if 'turso_url' in data: cloud['turso_url'] = data['turso_url']
+            if 'turso_token' in data: cloud['turso_token'] = data['turso_token']
+            if 'provider' in data: cloud['provider'] = data['provider']
 
             if 'app_name' in data: app['name'] = data['app_name']
             if 'github_repo' in data: app['github_repo'] = data['github_repo']
@@ -434,19 +439,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/cloud-sync":
             config = load_config()
             res = sync_config_to_cloud(config)
+            prov = (config.get('cloud_storage', {}).get('provider') or 'cloud').upper()
             if res.get('ok'):
-                log_event("Конфигурация успешно синхронизирована в облако Supabase", "success")
+                log_event(f"Конфигурация успешно синхронизирована в {prov}", "success")
             else:
                 log_event(f"Ошибка облачной синхронизации: {res.get('error')}", "error")
             self._send_json(res)
 
         elif path == "/api/cloud-fetch":
             config = load_config()
-            res = fetch_config_from_supabase(config)
+            res = fetch_config_from_cloud(config)
             if res.get('ok'):
                 log_event("Настройки успешно восстановлены из облака", "success")
             else:
                 log_event(f"Ошибка восстановления: {res.get('error')}", "error")
+            self._send_json(res)
+
+        elif path == "/api/test-turso":
+            config = load_config()
+            res = test_turso_connection(config)
             self._send_json(res)
 
         elif path == "/api/test-supabase":
@@ -665,10 +676,11 @@ def start_server(port=None):
 
     try:
         startup_conf = load_config()
-        if startup_conf.get('cloud_storage', {}).get('supabase_url'):
-            cloud_res = fetch_config_from_supabase(startup_conf)
+        prov = startup_conf.get('cloud_storage', {}).get('provider', 'local')
+        if prov != 'local':
+            cloud_res = fetch_config_from_cloud(startup_conf)
             if cloud_res.get('ok'):
-                log_event("Настройки успешно синхронизированы из облака Supabase при старте", "success")
+                log_event(f"Настройки успешно синхронизированы из облака ({prov.upper()}) при старте", "success")
     except Exception as e:
         print(f"[Startup] Cloud sync notice: {e}")
 

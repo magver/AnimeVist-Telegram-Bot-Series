@@ -1,258 +1,398 @@
 """
-User Authentication for AnimeVist Telegram Bot
-Authenticates users with AnimeVist credentials via Supabase GoTrue API
+User Authentication and Subscription Manager for AnimeVist Telegram Bot.
+Handles Supabase GoTrue authentication, user library synchronization,
+and personal subscription management in Supabase DB.
 """
 
+import os
 import json
+import time
 import urllib.request
 import urllib.parse
 import urllib.error
-import base64
-import time
+from typing import Dict, List, Optional, Tuple
 
 from telegram_sender import load_config
 
-def verify_user_credentials(email: str, password: str):
-    """
-    Verify AnimeVist user credentials via Supabase GoTrue API
-    Returns user info if valid, None otherwise
-    """
+def get_supabase_headers(access_token: Optional[str] = None) -> Tuple[str, Dict[str, str]]:
     config = load_config()
-    supabase_url = config['cloud_storage']['supabase_url']
-    supabase_key = config['cloud_storage']['supabase_key']
+    cloud = config.get('cloud_storage', {})
+    url = cloud.get('supabase_url', '').rstrip('/')
+    key = cloud.get('supabase_key', '')
     
-    if not supabase_url or not supabase_key:
-        print("[Auth] Missing Supabase configuration")
-        return None
-    
-    # GoTrue API endpoint for password sign-in
-    url = f"{supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
-    
-    # Prepare request
-    auth_string = f"{supabase_key}:"
-    auth_b64 = base64.b64encode(auth_string.encode('utf-8')).decode('utf-8')
-    
+    token = access_token or key
     headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json"
+        "apikey": key,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "AnimeVistBot/2.0"
     }
-    
-    data = json.dumps({
-        "email": email,
+    return url, headers
+
+def verify_user_credentials(email: str, password: str) -> Optional[Dict]:
+    url, headers = get_supabase_headers()
+    if not url or not headers.get('apikey'):
+        print("[Auth] Supabase URL or key not configured")
+        return None
+
+    endpoint = f"{url}/auth/v1/token?grant_type=password"
+    payload = json.dumps({
+        "email": email.strip().lower(),
         "password": password
     }).encode('utf-8')
-    
+
+    req = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
     try:
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            response = json.loads(resp.read().decode('utf-8'))
-            
-            if 'user' in response and 'access_token' in response:
-                user = response['user']
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            if 'user' in data and 'access_token' in data:
+                u = data['user']
+                metadata = u.get('user_metadata') or {}
+                username = metadata.get('username') or metadata.get('name') or u.get('email', '').split('@')[0]
                 return {
-                    'id': user['id'],
-                    'email': user['email'],
-                    'username': user['user_metadata'].get('username', user['email'].split('@')[0]),
-                    'avatar_url': user['user_metadata'].get('avatar_url'),
-                    'access_token': response['access_token']
+                    'id': u['id'],
+                    'email': u.get('email', email),
+                    'username': username,
+                    'avatar_url': metadata.get('avatar_url'),
+                    'access_token': data['access_token']
                 }
-            else:
-                print(f"[Auth] Login failed: {response.get('error_description', 'Unknown error')}")
-                return None
-                
     except urllib.error.HTTPError as e:
         try:
-            error_data = json.loads(e.read().decode('utf-8'))
-            print(f"[Auth] HTTP Error {e.code}: {error_data.get('error_description', 'Authentication failed')}")
-        except:
-            print(f"[Auth] HTTP Error {e.code}: {e.reason}")
-        return None
+            err = json.loads(e.read().decode('utf-8'))
+            print(f"[Auth] GoTrue HTTP {e.code}: {err.get('error_description') or err.get('msg') or err}")
+        except Exception:
+            print(f"[Auth] GoTrue HTTP {e.code}: {e.reason}")
     except Exception as e:
-        print(f"[Auth] Error: {str(e)}")
-        return None
+        print(f"[Auth] GoTrue request error: {e}")
+    return None
 
-def get_user_library(user_id: str, access_token: str):
-    """
-    Get user's anime library from Supabase
-    Returns watching list (items with status='watching')
-    """
-    config = load_config()
-    supabase_url = config['cloud_storage']['supabase_url']
-    
-    if not supabase_url:
-        print("[Auth] Missing Supabase URL")
+def get_user_library(user_id: str, access_token: Optional[str] = None) -> List[Dict]:
+    url, headers = get_supabase_headers(access_token)
+    if not url:
         return []
-    
-    # Query user_library table for anime with status='watching' and app='animevist'
-    url = f"{supabase_url.rstrip('/')}/rest/v1/user_library?user_id=eq.{user_id}&status=eq.watching&app=eq.animevist&select=anime_id,anime_title,anime_poster,last_aired_episode,last_watched_episode"
-    
-    headers = {
-        "apikey": config['cloud_storage']['supabase_key'],
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json"
-    }
-    
+
+    endpoint = f"{url}/rest/v1/user_library?user_id=eq.{user_id}&status=eq.watching&select=*"
+    req = urllib.request.Request(endpoint, headers=headers, method="GET")
+
     try:
-        req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            items = json.loads(resp.read().decode('utf-8'))
-            return items if isinstance(items, list) else []
-            
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            rows = json.loads(resp.read().decode('utf-8'))
+            if not isinstance(rows, list):
+                return []
+
+            results = []
+            for r in rows:
+                anime_id = r.get('anime_id')
+                if not anime_id:
+                    continue
+
+                raw_data = r.get('anime_data')
+                anime_data = {}
+                if isinstance(raw_data, str):
+                    try:
+                        anime_data = json.loads(raw_data)
+                    except Exception:
+                        anime_data = {}
+                elif isinstance(raw_data, dict):
+                    anime_data = raw_data
+
+                title = (
+                    anime_data.get('title_ru') or
+                    anime_data.get('title') or
+                    anime_data.get('russian') or
+                    anime_data.get('name') or
+                    r.get('anime_title') or
+                    f"Аниме #{anime_id}"
+                )
+
+                poster = (
+                    anime_data.get('poster') or
+                    anime_data.get('poster_url') or
+                    anime_data.get('urlImagePreview') or
+                    anime_data.get('image') or
+                    r.get('anime_poster') or
+                    ''
+                )
+                if poster and not poster.startswith('http'):
+                    poster = f"https://animevost.org{poster}"
+
+                current_ep = r.get('current_episode') or r.get('last_watched_episode') or 0
+
+                results.append({
+                    'anime_id': str(anime_id),
+                    'title': title,
+                    'poster': poster,
+                    'current_episode': current_ep,
+                    'raw': r
+                })
+
+            return results
+    except Exception as e:
+        print(f"[Auth] Error fetching user_library: {e}")
+        return []
+
+def update_user_subscription(
+    telegram_user_id: int,
+    animevist_user_id: Optional[str],
+    anime_id: str,
+    anime_title: Optional[str] = None,
+    anime_poster: Optional[str] = None,
+    last_notified_episode: int = 0,
+    active: bool = True
+) -> bool:
+    try:
+        from turso_db import TursoClient, turso_upsert_user_subscription
+        if TursoClient().is_configured():
+            return turso_upsert_user_subscription(
+                telegram_user_id=telegram_user_id,
+                animevist_user_id=animevist_user_id,
+                anime_id=anime_id,
+                anime_title=anime_title,
+                anime_poster=anime_poster,
+                last_notified_episode=last_notified_episode,
+                active=active
+            )
+    except Exception as e:
+        print(f"[Turso] Update sub error: {e}")
+
+    url, headers = get_supabase_headers()
+    if not url:
+        return False
+
+    endpoint = f"{url}/rest/v1/user_subscriptions?on_conflict=telegram_user_id,anime_id"
+    headers["Prefer"] = "resolution=merge-duplicates"
+
+    uid = animevist_user_id
+    if not uid:
+        existing = get_user_subscriptions(telegram_user_id=telegram_user_id, active_only=False)
+        for s in existing:
+            if s.get('animevist_user_id'):
+                uid = s.get('animevist_user_id')
+                break
+
+    payload_row = {
+        "telegram_user_id": int(telegram_user_id),
+        "anime_id": str(anime_id),
+        "last_notified_episode": int(last_notified_episode),
+        "active": active,
+        "updated_at": time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime())
+    }
+
+    if uid:
+        payload_row["animevist_user_id"] = uid
+    if anime_title:
+        payload_row["anime_title"] = anime_title
+    if anime_poster:
+        payload_row["anime_poster"] = anime_poster
+
+    data = json.dumps([payload_row]).encode('utf-8')
+    req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return True
     except urllib.error.HTTPError as e:
-        if e.code == 404:
-            print("[Auth] Table user_library not found - run migration script first")
-        else:
-            print(f"[Auth] HTTP Error fetching library: {e.code}")
-        return []
-    except Exception as e:
-        print(f"[Auth] Error fetching library: {str(e)}")
-        return []
+        # Fallback to PATCH if row already exists
+        if e.code in (400, 409):
+            try:
+                patch_endpoint = f"{url}/rest/v1/user_subscriptions?telegram_user_id=eq.{telegram_user_id}&anime_id=eq.{anime_id}"
+                patch_payload = {
+                    "last_notified_episode": int(last_notified_episode),
+                    "active": active,
+                    "updated_at": time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime())
+                }
+                if anime_title:
+                    patch_payload["anime_title"] = anime_title
+                if anime_poster:
+                    patch_payload["anime_poster"] = anime_poster
+                if uid:
+                    patch_payload["animevist_user_id"] = uid
 
-def update_user_subscription(telegram_user_id: int, animevist_user_id: str, anime_id: str, last_notified_episode: int = 0):
-    """
-    Create or update user subscription in Supabase
-    """
-    config = load_config()
-    supabase_url = config['cloud_storage']['supabase_url']
-    supabase_key = config['cloud_storage']['supabase_key']
-    
-    if not supabase_url or not supabase_key:
-        print("[Auth] Missing Supabase configuration")
+                patch_req = urllib.request.Request(
+                    patch_endpoint,
+                    data=json.dumps(patch_payload).encode('utf-8'),
+                    headers=headers,
+                    method="PATCH"
+                )
+                with urllib.request.urlopen(patch_req, timeout=10):
+                    return True
+            except Exception as patch_e:
+                print(f"[Auth] Supabase fallback patch error: {patch_e}")
+
+        err_msg = e.read().decode('utf-8', errors='replace')
+        print(f"[Auth] Supabase upsert error ({e.code}): {err_msg}")
         return False
-    
-    # First, check if subscription exists
-    check_url = f"{supabase_url.rstrip('/')}/rest/v1/user_subscriptions?telegram_user_id=eq.{telegram_user_id}&anime_id=eq.{anime_id}"
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
-    }
-    
+    except Exception as e:
+        print(f"[Auth] Error upserting subscription: {e}")
+        return False
+
+def get_user_subscriptions(
+    telegram_user_id: Optional[int] = None,
+    animevist_user_id: Optional[str] = None,
+    active_only: bool = True
+) -> List[Dict]:
     try:
-        # Check existing
-        check_req = urllib.request.Request(check_url, headers=headers, method="GET")
-        with urllib.request.urlopen(check_req, timeout=5) as resp:
-            existing = json.loads(resp.read().decode('utf-8'))
-            
-            subscription_data = {
-                "telegram_user_id": telegram_user_id,
-                "animevist_user_id": animevist_user_id,
-                "anime_id": anime_id,
-                "last_notified_episode": last_notified_episode,
-                "active": True,
-                "updated_at": time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime())
-            }
-            
-            # Create or update
-            upsert_url = f"{supabase_url.rstrip('/')}/rest/v1/user_subscriptions"
-            data = json.dumps([subscription_data]).encode('utf-8')
-            
-            upsert_req = urllib.request.Request(upsert_url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(upsert_req, timeout=8) as upsert_resp:
-                print(f"[Auth] Updated subscription for anime {anime_id}")
-                return True
-                
+        from turso_db import TursoClient, turso_get_user_subscriptions
+        if TursoClient().is_configured():
+            return turso_get_user_subscriptions(
+                telegram_user_id=telegram_user_id,
+                animevist_user_id=animevist_user_id,
+                active_only=active_only
+            )
     except Exception as e:
-        print(f"[Auth] Error updating subscription: {str(e)}")
-        return False
+        print(f"[Turso] Get subs error: {e}")
 
-def get_user_subscriptions(telegram_user_id: int = None, animevist_user_id: str = None):
-    """
-    Get user subscriptions from Supabase
-    """
-    config = load_config()
-    supabase_url = config['cloud_storage']['supabase_url']
-    supabase_key = config['cloud_storage']['supabase_key']
-    
-    if not supabase_url or not supabase_key:
-        print("[Auth] Missing Supabase configuration")
+    url, headers = get_supabase_headers()
+    if not url:
         return []
-    
-    # Build query
+
     filters = []
-    if telegram_user_id:
+    if telegram_user_id is not None:
         filters.append(f"telegram_user_id=eq.{telegram_user_id}")
-    if animevist_user_id:
+    if animevist_user_id is not None:
         filters.append(f"animevist_user_id=eq.{animevist_user_id}")
-    
-    if not filters:
-        return []
-    
-    url = f"{supabase_url.rstrip('/')}/rest/v1/user_subscriptions?{'&'.join(filters)}&active=eq.true&select=*"
-    
-    headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
-        "Content-Type": "application/json"
-    }
-    
+    if active_only:
+        filters.append("active=eq.true")
+
+    query_str = f"?{'&'.join(filters)}&order=updated_at.desc" if filters else "?order=updated_at.desc"
+    endpoint = f"{url}/rest/v1/user_subscriptions{query_str}&select=*"
+
+    req = urllib.request.Request(endpoint, headers=headers, method="GET")
     try:
-        req = urllib.request.Request(url, headers=headers, method="GET")
-        with urllib.request.urlopen(req, timeout=8) as resp:
-            items = json.loads(resp.read().decode('utf-8'))
-            return items if isinstance(items, list) else []
-            
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            return data if isinstance(data, list) else []
     except Exception as e:
-        print(f"[Auth] Error fetching subscriptions: {str(e)}")
+        print(f"[Auth] Error fetching subscriptions: {e}")
         return []
 
-def process_user_login(telegram_user_id: int, telegram_username: str, email: str, password: str):
-    """
-    Complete user login process:
-    1. Verify credentials via GoTrue
-    2. Get user's watching list
-    3. Create subscriptions for each anime
-    Returns (success, message, user_data)
-    """
-    print(f"[Auth] Processing login for Telegram user {telegram_user_id} ({email})")
-    
-    # Step 1: Verify credentials
+def toggle_user_subscription(telegram_user_id: int, anime_id: str, active: bool = False) -> bool:
+    try:
+        from turso_db import TursoClient, turso_toggle_user_subscription
+        if TursoClient().is_configured():
+            return turso_toggle_user_subscription(telegram_user_id, anime_id, active)
+    except Exception as e:
+        print(f"[Turso] Toggle error: {e}")
+
+    url, headers = get_supabase_headers()
+    if not url:
+        return False
+
+    endpoint = f"{url}/rest/v1/user_subscriptions?telegram_user_id=eq.{telegram_user_id}&anime_id=eq.{anime_id}"
+    payload = json.dumps({
+        "active": active,
+        "updated_at": time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime())
+    }).encode('utf-8')
+
+    req = urllib.request.Request(endpoint, data=payload, headers=headers, method="PATCH")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return True
+    except Exception as e:
+        print(f"[Auth] Error toggling subscription: {e}")
+        return False
+
+def delete_user_subscription(telegram_user_id: int, anime_id: str) -> bool:
+    try:
+        from turso_db import TursoClient
+        client = TursoClient()
+        if client.is_configured():
+            client.execute("DELETE FROM user_subscriptions WHERE telegram_user_id = ? AND anime_id = ?;", [int(telegram_user_id), str(anime_id)])
+            return True
+    except Exception as e:
+        print(f"[Turso] Delete sub error: {e}")
+
+    url, headers = get_supabase_headers()
+    if not url:
+        return False
+
+    endpoint = f"{url}/rest/v1/user_subscriptions?telegram_user_id=eq.{telegram_user_id}&anime_id=eq.{anime_id}"
+    req = urllib.request.Request(endpoint, headers=headers, method="DELETE")
+    try:
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            return True
+    except Exception as e:
+        print(f"[Auth] Error deleting subscription: {e}")
+        return False
+
+def get_bot_users_summary() -> Dict:
+    try:
+        from turso_db import TursoClient, turso_get_users_summary, turso_get_user_subscriptions
+        if TursoClient().is_configured():
+            summary = turso_get_users_summary()
+            subs = turso_get_user_subscriptions(active_only=False)
+            summary["total_subscriptions"] = len(subs)
+            summary["recent_subscriptions"] = subs[:10]
+            return summary
+    except Exception as e:
+        print(f"[Turso] Summary error: {e}")
+
+    subs = get_user_subscriptions(active_only=False)
+    unique_users = set()
+    active_subs_count = 0
+
+    for s in subs:
+        uid = s.get('telegram_user_id')
+        if uid:
+            unique_users.add(uid)
+        if s.get('active'):
+            active_subs_count += 1
+
+    return {
+        "total_users": len(unique_users),
+        "total_subscriptions": len(subs),
+        "active_subscriptions": active_subs_count,
+        "recent_subscriptions": subs[:10]
+    }
+
+def process_user_login(
+    telegram_user_id: int,
+    telegram_username: str,
+    email: str,
+    password: str
+) -> Tuple[bool, str, Optional[Dict]]:
     user_info = verify_user_credentials(email, password)
     if not user_info:
-        return False, "❌ Неверный email или пароль. Проверьте данные и попробуйте снова.", None
-    
-    # Step 2: Get user's watching list
+        return (
+            False,
+            "❌ <b>Неверный email или пароль</b>\n\nПожалуйста, проверьте данные учетной записи AnimeVist и попробуйте снова.",
+            None
+        )
+
     watching_list = get_user_library(user_info['id'], user_info['access_token'])
-    if not watching_list:
-        return False, f"✅ Вход выполнен успешно!\n\nПривет, {user_info['username']}! 🎉\n\nУ вас пока нет аниме в списке «Смотрю». Добавьте аниме в приложении AnimeVist, чтобы получать уведомления о новых сериях.", user_info
-    
-    # Step 3: Create subscriptions for each anime in watching list
-    successful_subscriptions = 0
-    for anime in watching_list:
-        anime_id = anime.get('anime_id')
-        if anime_id:
-            if update_user_subscription(telegram_user_id, user_info['id'], anime_id):
-                successful_subscriptions += 1
-    
-    return True, f"✅ Вход выполнен успешно!\n\nПривет, {user_info['username']}! 🎉\n\nТеперь вы получите уведомления о новых сериях для {successful_subscriptions} аниме из вашего списка «Смотрю»!", user_info
+    synced_count = 0
 
-def test_auth():
-    """Test function for authentication"""
-    print("[Auth] Testing authentication module...")
-    
-    # Test with sample credentials (these should be replaced with real ones)
-    email = "test@example.com"
-    password = "testpassword"
-    
-    user_info = verify_user_credentials(email, password)
-    if user_info:
-        print(f"[Auth] Success! User: {user_info['username']} ({user_info['email']})")
-        
-        # Test getting library
-        library = get_user_library(user_info['id'], user_info['access_token'])
-        print(f"[Auth] Watching list: {len(library)} anime")
-        
-        # Test subscription update
-        if library:
-            first_anime = library[0]
-            success = update_user_subscription(123456789, user_info['id'], first_anime.get('anime_id'))
-            print(f"[Auth] Subscription update: {'Success' if success else 'Failed'}")
+    for item in watching_list:
+        a_id = item['anime_id']
+        title = item['title']
+        poster = item['poster']
+        cur_ep = item['current_episode']
+
+        ok = update_user_subscription(
+            telegram_user_id=telegram_user_id,
+            animevist_user_id=user_info['id'],
+            anime_id=a_id,
+            anime_title=title,
+            anime_poster=poster,
+            last_notified_episode=cur_ep,
+            active=True
+        )
+        if ok:
+            synced_count += 1
+
+    username = user_info.get('username') or 'Пользователь'
+    if synced_count > 0:
+        msg = (
+            f"🎉 <b>С возвращением, {username}!</b>\n\n"
+            f"✅ Аккаунт AnimeVist успешно подключен: <code>{email}</code>\n"
+            f"📚 Синхронизировано аниме из списка «Смотрю»: <b>{synced_count}</b>\n\n"
+            f"🔔 Теперь бот будет мгновенно присылать вам в ЛС уведомления с постером и кнопками, как только выйдет новая серия любого из ваших тайтлов!"
+        )
     else:
-        print("[Auth] Authentication failed (expected for test credentials)")
-    
-    print("[Auth] Test complete")
+        msg = (
+            f"🎉 <b>С возвращением, {username}!</b>\n\n"
+            f"✅ Аккаунт успешно подключен: <code>{email}</code>\n\n"
+            f"ℹ️ В вашем списке «Смотрю» пока нет активных тайтлов. Добавьте аниме в приложении AnimeVist или найдите его через поиск прямо здесь, и бот подключит уведомления!"
+        )
 
-if __name__ == "__main__":
-    test_auth()
+    return True, msg, user_info
