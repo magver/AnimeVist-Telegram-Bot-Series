@@ -34,7 +34,20 @@ def get_default_config():
             "check_interval_seconds": 300,
             "enable_series_releases": True,
             "enable_anime_news": True,
-            "max_releases_per_cycle": 3
+            "max_releases_per_cycle": 3,
+            "enable_compilations": True,
+            "compilations_interval_hours": 6.0,
+            "enable_personal_notifications": True,
+            "personal_interval_minutes": 60,
+            "personal_user_cooldown_hours": 3.0,
+            "personal_max_episodes_per_user": 2,
+            "personal_batch_digest": False,
+            "personal_quiet_hours_enabled": True,
+            "personal_quiet_hours_start": 23,
+            "personal_quiet_hours_end": 8,
+            "personal_quiet_action": "skip",
+            "personal_silent_notifications": False,
+            "personal_strict_matching": True
         },
         "cloud_storage": {
             "provider": "local",
@@ -231,8 +244,20 @@ def fetch_config_from_upstash(conf=None):
             res_val = data.get('result')
             if res_val:
                 parsed = json.loads(res_val) if isinstance(res_val, str) else res_val
-                save_config(parsed, sync_to_cloud=False)
-                return {"ok": True, "config": parsed}
+                merged = get_default_config()
+                if conf:
+                    for sec, val in conf.items():
+                        if isinstance(val, dict) and sec in merged:
+                            merged[sec].update(val)
+                        else:
+                            merged[sec] = val
+                for sec, val in parsed.items():
+                    if isinstance(val, dict) and sec in merged:
+                        merged[sec].update(val)
+                    else:
+                        merged[sec] = val
+                save_config(merged, sync_to_cloud=False)
+                return {"ok": True, "config": merged}
             return {"ok": False, "error": "В Upstash нет сохраненного ключа animevist_config"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -242,21 +267,37 @@ def sync_config_to_supabase(conf):
     key = conf.get('cloud_storage', {}).get('supabase_key')
     if not url or not key:
         return {"ok": False, "error": "Supabase URL или Key не настроены"}
-    endpoint = f"{url.rstrip('/')}/rest/v1/bot_config"
-    payload = json.dumps([{"id": "animevist_main", "config": conf}]).encode('utf-8')
+    endpoint = f"{url.rstrip('/')}/rest/v1/bot_config?id=eq.animevist_main"
+    payload = json.dumps({"config": conf}).encode('utf-8')
     req = urllib.request.Request(
         endpoint,
         data=payload,
+        method='PATCH',
         headers={
             "apikey": key,
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
-            "Prefer": "resolution=merge-duplicates",
+            "Prefer": "return=representation",
             "User-Agent": "AnimeVistBot/1.0"
         }
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            if not data:
+                post_req = urllib.request.Request(
+                    f"{url.rstrip('/')}/rest/v1/bot_config",
+                    data=json.dumps([{"id": "animevist_main", "config": conf}]).encode('utf-8'),
+                    method='POST',
+                    headers={
+                        "apikey": key,
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                        "User-Agent": "AnimeVistBot/1.0"
+                    }
+                )
+                with urllib.request.urlopen(post_req, timeout=10):
+                    pass
             now_str = sys.modules.get('time', __import__('time')).strftime('%Y-%m-%d %H:%M:%S')
             conf['cloud_storage']['last_sync'] = now_str
             save_config(conf, sync_to_cloud=False)
@@ -285,8 +326,20 @@ def fetch_config_from_supabase(conf=None):
             data = json.loads(resp.read().decode('utf-8'))
             if data and len(data) > 0 and 'config' in data[0]:
                 loaded_conf = data[0]['config']
-                save_config(loaded_conf, sync_to_cloud=False)
-                return {"ok": True, "config": loaded_conf}
+                merged = get_default_config()
+                if conf:
+                    for sec, val in conf.items():
+                        if isinstance(val, dict) and sec in merged:
+                            merged[sec].update(val)
+                        else:
+                            merged[sec] = val
+                for sec, val in loaded_conf.items():
+                    if isinstance(val, dict) and sec in merged:
+                        merged[sec].update(val)
+                    else:
+                        merged[sec] = val
+                save_config(merged, sync_to_cloud=False)
+                return {"ok": True, "config": merged}
             return {"ok": False, "error": "Запись конфигурации bot_config не найдена в Supabase. Нажмите 'Сделать бэкап'."}
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -304,7 +357,6 @@ def load_seen_from_supabase(category='episode', days=None):
     endpoint = f"{url.rstrip('/')}/rest/v1/bot_seen_items?category=eq.{category}&select=item_id,created_at&limit=1000"
     if days:
         import datetime
-        import urllib.parse
         cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat()
         endpoint += f"&created_at=gte.{urllib.parse.quote(cutoff)}"
     req = urllib.request.Request(
@@ -371,7 +423,7 @@ class TelegramSender:
         self.channel_id = channel_id or tg_conf.get('channel_id')
         self.base_url = f"https://api.telegram.org/bot{self.bot_token}"
 
-    def send_message(self, text, chat_id=None, reply_markup=None, disable_preview=False):
+    def send_message(self, text, chat_id=None, reply_markup=None, disable_preview=False, disable_notification=False):
         target_chat = chat_id or self.channel_id
         if not self.bot_token or not target_chat:
             return {"ok": False, "description": "bot_token or chat_id not configured"}
@@ -382,12 +434,14 @@ class TelegramSender:
             "parse_mode": "HTML",
             "disable_web_page_preview": disable_preview
         }
+        if disable_notification:
+            payload["disable_notification"] = True
         if reply_markup:
             payload["reply_markup"] = reply_markup
 
         return self._make_request("sendMessage", payload)
 
-    def send_photo(self, photo_url_or_path, caption="", chat_id=None, reply_markup=None):
+    def send_photo(self, photo_url_or_path, caption="", chat_id=None, reply_markup=None, disable_notification=False):
         target_chat = chat_id or self.channel_id
         if not self.bot_token or not target_chat:
             return {"ok": False, "description": "bot_token or chat_id not configured"}
@@ -399,18 +453,23 @@ class TelegramSender:
                 "caption": caption,
                 "parse_mode": "HTML"
             }
+            if disable_notification:
+                payload["disable_notification"] = True
             if reply_markup:
                 payload["reply_markup"] = reply_markup
             return self._make_request("sendPhoto", payload)
         elif os.path.isfile(photo_url_or_path):
-            return self._send_multipart("sendPhoto", "photo", photo_url_or_path, {
+            extra = {
                 "chat_id": str(target_chat),
                 "caption": caption,
                 "parse_mode": "HTML",
                 "reply_markup": json.dumps(reply_markup) if reply_markup else None
-            })
+            }
+            if disable_notification:
+                extra["disable_notification"] = "true"
+            return self._send_multipart("sendPhoto", "photo", photo_url_or_path, extra)
         else:
-            return self.send_message(f"<b>[Медиа]</b>\n{caption}", chat_id=target_chat, reply_markup=reply_markup)
+            return self.send_message(f"<b>[Медиа]</b>\n{caption}", chat_id=target_chat, reply_markup=reply_markup, disable_notification=disable_notification)
 
     def send_document(self, file_path, caption="", chat_id=None):
         target_chat = chat_id or self.channel_id
