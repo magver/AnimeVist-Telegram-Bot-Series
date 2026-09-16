@@ -122,6 +122,16 @@ def load_config():
         cloud['turso_url'] = os.environ.get("TURSO_URL") or os.environ.get("TURSO_DATABASE_URL")
     if os.environ.get("TURSO_TOKEN") or os.environ.get("TURSO_AUTH_TOKEN"):
         cloud['turso_token'] = os.environ.get("TURSO_TOKEN") or os.environ.get("TURSO_AUTH_TOKEN")
+    if os.environ.get("CLOUD_PROVIDER"):
+        cloud['provider'] = os.environ.get("CLOUD_PROVIDER")
+    if os.environ.get("CLOUDFLARE_WORKER_URL") or os.environ.get("API_URL"):
+        cloud['cloudflare_worker_url'] = os.environ.get("CLOUDFLARE_WORKER_URL") or os.environ.get("API_URL")
+        cloud['api_url'] = cloud['cloudflare_worker_url']
+    if cloud.get('provider') == 'cloudflare':
+        if not cloud.get('cloudflare_worker_url') and not cloud.get('api_url'):
+            default_worker = "https://animevist-backend.animevist-api.workers.dev"
+            cloud['cloudflare_worker_url'] = default_worker
+            cloud['api_url'] = default_worker
 
     return conf
 
@@ -144,7 +154,9 @@ def sync_config_to_cloud(conf=None):
         conf = load_config()
     provider = conf.get('cloud_storage', {}).get('provider', 'local')
     
-    if provider == 'turso':
+    if provider == 'cloudflare':
+        return sync_config_to_cloudflare(conf)
+    elif provider == 'turso':
         try:
             from turso_db import sync_config_to_turso
             return sync_config_to_turso(conf)
@@ -360,11 +372,61 @@ def fetch_config_from_supabase(conf=None):
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
+def sync_config_to_cloudflare(conf):
+    cs = conf.get('cloud_storage', {})
+    api_url = cs.get('api_url') or cs.get('cloudflare_worker_url') or "https://animevist-backend.animevist-api.workers.dev"
+    endpoint = f"{api_url.rstrip('/')}/api/save-config"
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(conf).encode('utf-8'),
+        headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            now_str = sys.modules.get('time', __import__('time')).strftime('%Y-%m-%d %H:%M:%S')
+            conf['cloud_storage']['last_sync'] = now_str
+            save_config(conf, sync_to_cloud=False)
+            return {"ok": True, "message": "Конфиг сохранен в Cloudflare D1"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def fetch_config_from_cloudflare(conf=None):
+    if conf is None:
+        conf = load_config()
+    cs = conf.get('cloud_storage', {})
+    api_url = cs.get('api_url') or cs.get('cloudflare_worker_url') or "https://animevist-backend.animevist-api.workers.dev"
+    endpoint = f"{api_url.rstrip('/')}/api/status"
+    req = urllib.request.Request(endpoint, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            if data and 'config' in data and data['config']:
+                loaded_conf = data['config']
+                merged = get_default_config()
+                if conf:
+                    for sec, val in conf.items():
+                        if isinstance(val, dict) and sec in merged:
+                            merged[sec].update(val)
+                        else:
+                            merged[sec] = val
+                for sec, val in loaded_conf.items():
+                    if isinstance(val, dict) and sec in merged:
+                        merged[sec].update(val)
+                    else:
+                        merged[sec] = val
+                save_config(merged, sync_to_cloud=False)
+                return {"ok": True, "config": merged}
+            return {"ok": False, "error": "В Cloudflare D1 нет сохраненного конфига"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
 def fetch_config_from_cloud(conf=None):
     if conf is None:
         conf = load_config()
     provider = conf.get('cloud_storage', {}).get('provider', 'local')
-    if provider == 'turso':
+    if provider == 'cloudflare':
+        return fetch_config_from_cloudflare(conf)
+    elif provider == 'turso':
         try:
             from turso_db import fetch_config_from_turso
             res = fetch_config_from_turso()

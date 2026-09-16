@@ -1514,11 +1514,17 @@
 
           <div class="form-group">
             <label class="form-label"><span>Основной провайдер БД:</span></label>
-            <select id="cfgCloudProvider" style="width:100%; padding:9px 12px; background:var(--bg-input); border:1px solid var(--border-default); border-radius:var(--radius-md); color:#fff; font-size:0.88rem; outline:none;">
-              <option value="turso">Turso.tech (libSQL / SQLite Serverless) — Рекомендуется (Free, без 409 ошибок)</option>
+            <select id="cfgCloudProvider" onchange="toggleCloudProviderUI()" style="width:100%; padding:9px 12px; background:var(--bg-input); border:1px solid var(--border-default); border-radius:var(--radius-md); color:#fff; font-size:0.88rem; outline:none;">
+              <option value="cloudflare">⚡ Cloudflare D1 + Workers (0$ Egress, Zero Middlemen) — Рекомендуется</option>
+              <option value="turso">Turso.tech (libSQL / SQLite Serverless)</option>
               <option value="supabase">Supabase (PostgreSQL)</option>
               <option value="local">Только локальное хранилище (без облака)</option>
             </select>
+          </div>
+
+          <div id="groupCloudflareUrl" class="form-group" style="margin-top:10px;">
+            <label class="form-label"><span>Cloudflare Edge API Worker URL:</span></label>
+            <input type="text" id="cfgCloudflareWorkerUrl" placeholder="https://animevist-backend.animevist-api.workers.dev">
           </div>
 
           <div id="tursoSettingsBlock" style="margin-top:10px;">
@@ -1926,7 +1932,10 @@
           const c = data.config.cloud_storage || {};
           const statEl = document.getElementById('statSupabase');
           if (statEl) {
-            if (c.provider === 'turso' || (c.turso_url && c.turso_token)) {
+            if (c.provider === 'cloudflare' || c.cloudflare_worker_url) {
+              statEl.textContent = 'Cloudflare D1 (200 OK)';
+              statEl.style.color = 'var(--accent-emerald)';
+            } else if (c.provider === 'turso' || (c.turso_url && c.turso_token)) {
               statEl.textContent = 'Turso (libSQL 200 OK)';
               statEl.style.color = 'var(--accent-cyan)';
             } else if (c.provider === 'supabase' || c.supabase_url) {
@@ -1947,6 +1956,15 @@
       }
     }
 
+    function toggleCloudProviderUI() {
+      const provEl = document.getElementById('cfgCloudProvider');
+      const prov = provEl ? provEl.value : 'cloudflare';
+      const cfGroup = document.getElementById('groupCloudflareUrl');
+      const tursoGroup = document.getElementById('tursoSettingsBlock');
+      if (cfGroup) cfGroup.style.display = (prov === 'cloudflare') ? 'block' : 'none';
+      if (tursoGroup) tursoGroup.style.display = (prov === 'turso') ? 'block' : 'none';
+    }
+
     function populateConfig(conf) {
       const tg = conf.telegram || {};
       const cloud = conf.cloud_storage || {};
@@ -1959,7 +1977,10 @@
       document.getElementById('cfgAdminId').value = tg.admin_id || '';
 
       if (document.getElementById('cfgCloudProvider')) {
-        document.getElementById('cfgCloudProvider').value = cloud.provider || 'turso';
+        document.getElementById('cfgCloudProvider').value = cloud.provider || 'cloudflare';
+      }
+      if (document.getElementById('cfgCloudflareWorkerUrl')) {
+        document.getElementById('cfgCloudflareWorkerUrl').value = cloud.cloudflare_worker_url || cloud.api_url || 'https://animevist-backend.animevist-api.workers.dev';
       }
       if (document.getElementById('cfgTursoUrl')) {
         document.getElementById('cfgTursoUrl').value = cloud.turso_url || '';
@@ -1969,6 +1990,7 @@
       }
       document.getElementById('cfgSupabaseUrl').value = cloud.supabase_url || '';
       document.getElementById('cfgSupabaseKey').value = cloud.supabase_key || '';
+      toggleCloudProviderUI();
 
       document.getElementById('cfgAppName').value = app.name || 'AnimeVist';
       document.getElementById('cfgGithubRepo').value = app.github_repo || 'magver/AnimeVist-Releases';
@@ -2070,7 +2092,8 @@
         channel_id: document.getElementById('cfgChannelId').value.trim(),
         discussion_chat_id: document.getElementById('cfgDiscussionId').value.trim(),
         admin_id: document.getElementById('cfgAdminId').value.trim(),
-        provider: document.getElementById('cfgCloudProvider') ? document.getElementById('cfgCloudProvider').value : 'turso',
+        provider: document.getElementById('cfgCloudProvider') ? document.getElementById('cfgCloudProvider').value : 'cloudflare',
+        cloudflare_worker_url: document.getElementById('cfgCloudflareWorkerUrl') ? document.getElementById('cfgCloudflareWorkerUrl').value.trim() : '',
         turso_url: document.getElementById('cfgTursoUrl') ? document.getElementById('cfgTursoUrl').value.trim() : '',
         turso_token: document.getElementById('cfgTursoToken') ? document.getElementById('cfgTursoToken').value.trim() : '',
         supabase_url: document.getElementById('cfgSupabaseUrl').value.trim(),

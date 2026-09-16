@@ -30,6 +30,42 @@ def get_supabase_headers(access_token: Optional[str] = None) -> Tuple[str, Dict[
     return url, headers
 
 def verify_user_credentials(email: str, password: str) -> Optional[Dict]:
+    config = load_config()
+    cs = config.get('cloud_storage', {})
+    provider = cs.get('provider', 'supabase')
+
+    if provider == 'cloudflare':
+        api_url = cs.get('api_url') or cs.get('cloudflare_worker_url')
+        if not api_url:
+            print("[Auth] Cloudflare API URL not configured")
+            return None
+        endpoint = f"{api_url.rstrip('/')}/api/auth/login"
+        payload = json.dumps({
+            "email": email.strip().lower(),
+            "password": password
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            endpoint,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=12) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if 'user' in data and 'token' in data:
+                    u = data['user']
+                    return {
+                        'id': u['id'],
+                        'email': u.get('email', email),
+                        'username': u.get('username') or email.split('@')[0],
+                        'avatar_url': u.get('avatar_url'),
+                        'access_token': data['token']
+                    }
+        except Exception as e:
+            print(f"[Auth] Cloudflare login error: {e}")
+        return None
+
     url, headers = get_supabase_headers()
     if not url or not headers.get('apikey'):
         print("[Auth] Supabase URL or key not configured")
@@ -67,6 +103,66 @@ def verify_user_credentials(email: str, password: str) -> Optional[Dict]:
     return None
 
 def get_user_library(user_id: str, access_token: Optional[str] = None) -> List[Dict]:
+    config = load_config()
+    cs = config.get('cloud_storage', {})
+    provider = cs.get('provider', 'supabase')
+
+    if provider == 'cloudflare':
+        api_url = cs.get('api_url') or cs.get('cloudflare_worker_url')
+        if not api_url:
+            return []
+        endpoint = f"{api_url.rstrip('/')}/api/bot/library?user_id={user_id}"
+        req = urllib.request.Request(endpoint, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                rows = json.loads(resp.read().decode('utf-8'))
+                if not isinstance(rows, list):
+                    return []
+                results = []
+                for r in rows:
+                    anime_id = r.get('anime_id')
+                    if not anime_id:
+                        continue
+                    raw_data = r.get('anime_data')
+                    anime_data = {}
+                    if isinstance(raw_data, str):
+                        try:
+                            anime_data = json.loads(raw_data)
+                        except Exception:
+                            anime_data = {}
+                    elif isinstance(raw_data, dict):
+                        anime_data = raw_data
+                    title = (
+                        anime_data.get('title_ru') or
+                        anime_data.get('title') or
+                        anime_data.get('russian') or
+                        anime_data.get('name') or
+                        r.get('anime_title') or
+                        f"Аниме #{anime_id}"
+                    )
+                    poster = (
+                        anime_data.get('poster') or
+                        anime_data.get('poster_url') or
+                        anime_data.get('urlImagePreview') or
+                        anime_data.get('image') or
+                        r.get('anime_poster') or
+                        ''
+                    )
+                    if poster and not poster.startswith('http'):
+                        poster = f"https://animevost.org{poster}"
+                    current_ep = r.get('current_episode') or r.get('last_watched_episode') or 0
+                    results.append({
+                        'anime_id': str(anime_id),
+                        'title': title,
+                        'poster': poster,
+                        'current_episode': current_ep,
+                        'raw': r
+                    })
+                return results
+        except Exception as e:
+            print(f"[Auth] Cloudflare error fetching user_library: {e}")
+            return []
+
     url, headers = get_supabase_headers(access_token)
     if not url:
         return []
@@ -140,6 +236,37 @@ def update_user_subscription(
     last_notified_episode: int = 0,
     active: bool = True
 ) -> bool:
+    config = load_config()
+    cs = config.get('cloud_storage', {})
+    provider = cs.get('provider', 'supabase')
+
+    if provider == 'cloudflare':
+        api_url = cs.get('api_url') or cs.get('cloudflare_worker_url')
+        if not api_url:
+            return False
+        endpoint = f"{api_url.rstrip('/')}/api/bot/subscriptions"
+        payload = {
+            "telegram_user_id": int(telegram_user_id),
+            "animevist_user_id": animevist_user_id,
+            "anime_id": str(anime_id),
+            "anime_title": anime_title,
+            "anime_poster": anime_poster,
+            "last_notified_episode": int(last_notified_episode),
+            "active": active
+        }
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode('utf-8'),
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return True
+        except Exception as e:
+            print(f"[Auth] Cloudflare subscription error: {e}")
+            return False
+
     try:
         from turso_db import TursoClient, turso_upsert_user_subscription
         if TursoClient().is_configured():
@@ -231,6 +358,30 @@ def get_user_subscriptions(
     animevist_user_id: Optional[str] = None,
     active_only: bool = True
 ) -> List[Dict]:
+    config = load_config()
+    cs = config.get('cloud_storage', {})
+    provider = cs.get('provider', 'supabase')
+
+    if provider == 'cloudflare':
+        api_url = cs.get('api_url') or cs.get('cloudflare_worker_url')
+        if not api_url:
+            return []
+        endpoint = f"{api_url.rstrip('/')}/api/bot/subscriptions"
+        if telegram_user_id is not None:
+            endpoint += f"?telegram_user_id={telegram_user_id}"
+        req = urllib.request.Request(endpoint, headers={"User-Agent": "Mozilla/5.0"}, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                if not isinstance(data, list):
+                    return []
+                if active_only:
+                    data = [s for s in data if s.get('active')]
+                return data
+        except Exception as e:
+            print(f"[Auth] Cloudflare get_subscriptions error: {e}")
+            return []
+
     try:
         from turso_db import TursoClient, turso_get_user_subscriptions
         if TursoClient().is_configured():
@@ -267,6 +418,27 @@ def get_user_subscriptions(
         return []
 
 def toggle_user_subscription(telegram_user_id: int, anime_id: str, active: bool = False) -> bool:
+    config = load_config()
+    cs = config.get('cloud_storage', {})
+    provider = cs.get('provider', 'supabase')
+
+    if provider == 'cloudflare':
+        api_url = cs.get('api_url') or cs.get('cloudflare_worker_url')
+        if not api_url:
+            return False
+        endpoint = f"{api_url.rstrip('/')}/api/bot/subscriptions/toggle"
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps({"telegram_user_id": int(telegram_user_id), "anime_id": str(anime_id), "active": active}).encode('utf-8'),
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return True
+        except Exception:
+            return False
+
     try:
         from turso_db import TursoClient, turso_toggle_user_subscription
         if TursoClient().is_configured():
@@ -293,6 +465,27 @@ def toggle_user_subscription(telegram_user_id: int, anime_id: str, active: bool 
         return False
 
 def delete_user_subscription(telegram_user_id: int, anime_id: str) -> bool:
+    config = load_config()
+    cs = config.get('cloud_storage', {})
+    provider = cs.get('provider', 'supabase')
+
+    if provider == 'cloudflare':
+        api_url = cs.get('api_url') or cs.get('cloudflare_worker_url')
+        if not api_url:
+            return False
+        endpoint = f"{api_url.rstrip('/')}/api/bot/subscriptions/delete"
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps({"telegram_user_id": int(telegram_user_id), "anime_id": str(anime_id)}).encode('utf-8'),
+            headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            method="POST"
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return True
+        except Exception:
+            return False
+
     try:
         from turso_db import TursoClient
         client = TursoClient()

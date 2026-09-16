@@ -362,6 +362,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if 'supabase_key' in data: cloud['supabase_key'] = data['supabase_key']
             if 'turso_url' in data: cloud['turso_url'] = data['turso_url']
             if 'turso_token' in data: cloud['turso_token'] = data['turso_token']
+            if 'cloudflare_worker_url' in data:
+                cloud['cloudflare_worker_url'] = data['cloudflare_worker_url']
+                cloud['api_url'] = data['cloudflare_worker_url']
             if 'provider' in data: cloud['provider'] = data['provider']
 
             if 'app_name' in data: app['name'] = data['app_name']
