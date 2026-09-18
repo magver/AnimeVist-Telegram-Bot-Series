@@ -526,6 +526,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if 'interval_minutes' in data: ann['check_interval_seconds'] = max(60, int(data['interval_minutes']) * 60)
                 if 'interval_sec' in data: ann['check_interval_seconds'] = max(60, int(data['interval_sec']))
                 if 'max_releases' in data: ann['max_releases_per_cycle'] = int(data['max_releases'])
+                if 'quiet_hours_enabled' in data: ann['releases_quiet_hours_enabled'] = bool(data['quiet_hours_enabled'])
+                if 'quiet_start' in data: ann['releases_quiet_hours_start'] = int(data['quiet_start'])
+                if 'quiet_end' in data: ann['releases_quiet_hours_end'] = int(data['quiet_end'])
+                if 'quiet_mode' in data: ann['releases_quiet_action'] = str(data['quiet_mode'])
+                if 'silent_all' in data: ann['releases_silent_notifications'] = bool(data['silent_all'])
                 if 'include_hashtags' in data: ann['include_genre_hashtags'] = bool(data['include_hashtags'])
                 if 'show_chat' in data: ann['show_chat_button'] = bool(data['show_chat'])
             elif mod == 'news':
@@ -571,6 +576,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 title_ru = data.get('title_ru')
                 total_ep = data.get('total_ep')
                 rating = data.get('rating')
+                disable_notif = bool(data.get('silent') or config.get('announcer', {}).get('releases_silent_notifications', False))
                 res = publish_single_custom_episode(
                     vost_id or '0',
                     ep_num or '1',
@@ -579,7 +585,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     reply_markup=reply_markup,
                     title_ru=title_ru,
                     total_ep=total_ep,
-                    rating=rating
+                    rating=rating,
+                    disable_notification=disable_notif
                 )
                 log_event(f"Ручная публикация серии {ep_num} в канал", "success" if res.get('ok') else "error")
                 self._send_json(res)

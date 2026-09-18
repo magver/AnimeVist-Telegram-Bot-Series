@@ -684,11 +684,36 @@ def fetch_latest_episodes(quantity=40):
         print(f"[Announcer] Error fetching AnimeVost: {e}")
         return []
 
+def is_in_quiet_hours(start_hour: int = 23, end_hour: int = 8) -> bool:
+    """Check if current time is within quiet hours (MSK / UTC+3)."""
+    msk_hour = time.gmtime(time.time() + 3 * 3600).tm_hour
+    if start_hour > end_hour:
+        # Crosses midnight, e.g. 23:00 to 08:00
+        return msk_hour >= start_hour or msk_hour < end_hour
+    elif start_hour < end_hour:
+        # e.g. 01:00 to 07:00
+        return start_hour <= msk_hour < end_hour
+    return False
+
 def run_series_check(dry_run=False):
     config = load_config()
-    if not config.get('announcer', {}).get('enable_series_releases', True) and not dry_run:
+    ann_conf = config.get('announcer', {})
+    if not ann_conf.get('enable_series_releases', True) and not dry_run:
         print("[Announcer] Публикация серий отключена в настройках (enable_series_releases = False).")
         return 0
+
+    quiet_enabled = ann_conf.get('releases_quiet_hours_enabled', True)
+    quiet_start = int(ann_conf.get('releases_quiet_hours_start', 23))
+    quiet_end = int(ann_conf.get('releases_quiet_hours_end', 8))
+    quiet_action = ann_conf.get('releases_quiet_action', 'skip')
+    silent_always = ann_conf.get('releases_silent_notifications', False)
+
+    is_quiet_now = quiet_enabled and is_in_quiet_hours(quiet_start, quiet_end)
+    if is_quiet_now and quiet_action == 'skip' and not dry_run:
+        print(f"[Announcer] 🌙 Ночной тихий режим ({quiet_start}:00-{quiet_end}:00 МСК). Публикация онгоингов отложена до утра.")
+        return 0
+
+    silent_post = bool(silent_always or (is_quiet_now and quiet_action == 'silent'))
 
     sender = TelegramSender()
     seen = load_seen_episodes()
@@ -699,7 +724,7 @@ def run_series_check(dry_run=False):
         print("[Announcer] No items fetched.")
         return 0
 
-    max_per_cycle = config.get('announcer', {}).get('max_releases_per_cycle', 3)
+    max_per_cycle = ann_conf.get('max_releases_per_cycle', 3)
     published_count = 0
 
     # Seed on first run if empty
@@ -786,7 +811,7 @@ def run_series_check(dry_run=False):
             print("Hashtags:", hashtags)
             print("Reply markup:", reply_markup)
         else:
-            res = sender.send_photo(poster_with_overlay, caption=caption, reply_markup=reply_markup)
+            res = sender.send_photo(poster_with_overlay, caption=caption, reply_markup=reply_markup, disable_notification=silent_post)
             if res.get('ok'):
                 print(f"[Announcer] ✅ Опубликовано: {ep_key}")
             else:
@@ -886,7 +911,7 @@ def get_recent_releases_for_preview(count=15, only_unseen=True):
 
     return results
 
-def publish_single_custom_episode(vost_id, ep_num, caption, poster_url=None, reply_markup=None, title_ru=None, total_ep=None, rating=None):
+def publish_single_custom_episode(vost_id, ep_num, caption, poster_url=None, reply_markup=None, title_ru=None, total_ep=None, rating=None, disable_notification=False):
     sender = TelegramSender()
     if poster_url and (poster_url.startswith('http') or os.path.isfile(poster_url)):
         target_poster = poster_url
@@ -911,9 +936,9 @@ def publish_single_custom_episode(vost_id, ep_num, caption, poster_url=None, rep
         except Exception as e:
             print(f"[Announcer] Poster overlay generation warning ({e}), using raw poster.")
 
-        res = sender.send_photo(target_poster, caption=caption, reply_markup=reply_markup)
+        res = sender.send_photo(target_poster, caption=caption, reply_markup=reply_markup, disable_notification=disable_notification)
     else:
-        res = sender.send_message(caption, reply_markup=reply_markup)
+        res = sender.send_message(caption, reply_markup=reply_markup, disable_notification=disable_notification)
 
     if res.get('ok'):
         seen = load_seen_episodes()

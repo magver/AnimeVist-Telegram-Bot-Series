@@ -1022,11 +1022,12 @@
           <div class="module-tile" onclick="openModuleConsole('releases')">
             <div class="module-tile-header">
               <span class="module-tile-title">🔍 Выход Серий</span>
-              <span class="module-badge" id="badgeReleasesSchedule">⏱ 5 мин</span>
+              <span class="module-badge" id="badgeReleasesSchedule" onclick="event.stopPropagation(); openModuleConsole('releases', 'schedule')" style="cursor:pointer;" title="Нажмите для настройки авто-расписания 24/7">⏱ Раз в 5 мин</span>
             </div>
             <div class="module-tile-desc">Мониторинг AnimeVost, HD-постеры и кликабельные жанровые теги (#онгоинг)</div>
             <div class="module-tile-actions">
-              <button class="btn btn-primary btn-xs" onclick="event.stopPropagation(); openModuleConsole('releases')">⚙️ Открыть &amp; Править</button>
+              <button class="btn btn-primary btn-xs" onclick="event.stopPropagation(); openModuleConsole('releases')">⚙️ Открыть</button>
+              <button class="btn btn-outline btn-xs" onclick="event.stopPropagation(); openModuleConsole('releases', 'schedule')" title="Настройка расписания, анти-флуда и тихих часов" style="color:var(--accent-cyan); border-color:rgba(56,189,248,0.4);">⏱️ Расписание 24/7</button>
               <button class="btn btn-secondary btn-xs" onclick="event.stopPropagation(); triggerAction('releases')" title="Запустить проверку в фоне">⚡ Пуск</button>
             </div>
           </div>
@@ -1105,12 +1106,20 @@
           <div class="card-title">⚙️ Автоматические Режимы 24/7</div>
           <div class="card-subtitle">Управление расписанием и автономным циклом мониторинга:</div>
 
-          <div class="switch-row">
+          <div class="switch-row" style="align-items:flex-start;">
             <div>
-              <div class="switch-title">Мониторинг Новых Серий</div>
-              <div class="switch-sub">AnimeVost & Shikimori каждые 5 минут (#онгоинг)</div>
+              <div class="switch-title" style="display:flex; align-items:center; gap:8px;">
+                <span>Мониторинг Новых Серий (#онгоинг)</span>
+                <span class="module-badge" id="mainCardReleasesBadge" onclick="openModuleConsole('releases', 'schedule')" style="font-size:0.68rem; cursor:pointer;" title="Нажмите для настройки авто-расписания">⏱ Раз в 5 мин</span>
+              </div>
+              <div class="switch-sub">AnimeVost & Shikimori 24/7 с генерацией постеров, жанровыми тегами и ночным тихим режимом</div>
+              <div style="margin-top:6px;">
+                <button type="button" class="btn btn-outline btn-xs" onclick="openModuleConsole('releases', 'schedule')" style="color:var(--accent-cyan); border-color:rgba(56,189,248,0.4); font-size:0.75rem; padding:3px 10px;">
+                  ⏱️ Настройка Авто-Расписания 24/7 и Правил Выпуска →
+                </button>
+              </div>
             </div>
-            <label class="switch">
+            <label class="switch" style="margin-top:4px;">
               <input type="checkbox" id="swSeries" checked onchange="saveAutomationToggles()">
               <span class="slider"></span>
             </label>
@@ -2529,11 +2538,24 @@
 
       // 1. Releases
       const bRel = document.getElementById('badgeReleasesSchedule');
-      if (bRel) {
+      const bMainRel = document.getElementById('mainCardReleasesBadge');
+      if (bRel || bMainRel) {
         const on = ann.enable_series_releases !== false;
-        const interval = Math.round((ann.check_interval_seconds || 300) / 60);
-        bRel.className = `module-badge ${on ? 'on' : 'off'}`;
-        bRel.textContent = on ? `⏱ ${interval} мин` : '⏸ Выключен';
+        const sec = ann.check_interval_seconds || 300;
+        const mins = Math.round(sec / 60);
+        let text = `⏱ Раз в ${mins} мин`;
+        if (mins >= 60) {
+          const hrs = mins / 60;
+          text = Number.isInteger(hrs) ? `⏱ Раз в ${hrs} ч` : `⏱ Раз в ${hrs.toFixed(1)} ч`;
+        }
+        if (bRel) {
+          bRel.className = `module-badge ${on ? 'on' : 'off'}`;
+          bRel.textContent = on ? text : '⏸ Выключен';
+        }
+        if (bMainRel) {
+          bMainRel.className = `module-badge ${on ? 'on' : 'off'}`;
+          bMainRel.textContent = on ? text : '⏸ Выключен';
+        }
       }
 
       // 2. News
@@ -2728,23 +2750,124 @@
 
       if (moduleId === 'releases') {
         isEnabled = ann.enable_series_releases !== false;
-        const interval = ann.check_interval_seconds || 300;
+        const intervalSec = ann.check_interval_seconds || 300;
+        const maxReleases = ann.max_releases_per_cycle !== undefined ? ann.max_releases_per_cycle : 3;
+        const quietEnabled = ann.releases_quiet_hours_enabled !== false;
+        const quietStart = ann.releases_quiet_hours_start !== undefined ? ann.releases_quiet_hours_start : 23;
+        const quietEnd = ann.releases_quiet_hours_end !== undefined ? ann.releases_quiet_hours_end : 8;
+        const quietAction = ann.releases_quiet_action || 'skip';
+        const silentAll = ann.releases_silent_notifications === true;
         const hashtags = ann.include_genre_hashtags !== false;
         const showChat = ann.show_chat_button !== false;
 
+        let startOptions = '';
+        for (let h = 0; h < 24; h++) {
+          const hh = h < 10 ? '0' + h : '' + h;
+          startOptions += `<option value="${h}" ${h === quietStart ? 'selected' : ''}>${hh}:00</option>`;
+        }
+        let endOptions = '';
+        for (let h = 0; h < 24; h++) {
+          const hh = h < 10 ? '0' + h : '' + h;
+          endOptions += `<option value="${h}" ${h === quietEnd ? 'selected' : ''}>${hh}:00</option>`;
+        }
+
         html = `
-          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:8px;">
-            <div class="form-group" style="margin:0;">
-              <label class="form-label"><span>Период опроса (секунды):</span></label>
-              <input type="number" id="modalRelInterval" value="${interval}" min="60" step="30" onchange="saveActiveModuleSchedule()">
+          <div style="display:flex; flex-direction:column; gap:12px; margin-top:8px;">
+            <!-- Row 1: Polling Interval & Max Releases per cycle -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:10px;">
+              <div class="form-group" style="margin:0;">
+                <label class="form-label"><span>⏱️ Интервал проверки и публикации:</span></label>
+                <select id="modalRelIntervalSelect" onchange="saveActiveModuleSchedule()">
+                  <option value="180" ${intervalSec === 180 ? 'selected' : ''}>Каждые 3 минуты (Молниеносный)</option>
+                  <option value="300" ${intervalSec === 300 ? 'selected' : ''}>Каждые 5 минут (Рекомендуется)</option>
+                  <option value="600" ${intervalSec === 600 ? 'selected' : ''}>Каждые 10 минут</option>
+                  <option value="900" ${intervalSec === 900 ? 'selected' : ''}>Каждые 15 минут</option>
+                  <option value="1800" ${intervalSec === 1800 ? 'selected' : ''}>Каждые 30 минут</option>
+                  <option value="3600" ${intervalSec === 3600 ? 'selected' : ''}>Каждый 1 час</option>
+                  <option value="7200" ${intervalSec === 7200 ? 'selected' : ''}>Каждые 2 часа</option>
+                </select>
+                <div style="font-size:0.7rem; color:var(--text-muted); margin-top:3px;">Как часто бот опрашивает появление новых серий в AnimeVost</div>
+              </div>
+
+              <div class="form-group" style="margin:0;">
+                <label class="form-label"><span>📊 Лимит публикаций за один цикл:</span></label>
+                <select id="modalRelMaxPerCycle" onchange="saveActiveModuleSchedule()">
+                  <option value="1" ${maxReleases === 1 ? 'selected' : ''}>1 серия за цикл (Строгая защита от спама)</option>
+                  <option value="2" ${maxReleases === 2 ? 'selected' : ''}>2 серии за цикл</option>
+                  <option value="3" ${maxReleases === 3 ? 'selected' : ''}>3 серии за цикл (Рекомендуется)</option>
+                  <option value="5" ${maxReleases === 5 ? 'selected' : ''}>5 серий за цикл</option>
+                  <option value="999" ${maxReleases >= 999 ? 'selected' : ''}>Без ограничений (все вышедшие)</option>
+                </select>
+                <div style="font-size:0.7rem; color:var(--text-muted); margin-top:3px;">Защита от отправки шквала сообщений при массовом обновлении каталога</div>
+              </div>
             </div>
-            <div style="display:flex; flex-direction:column; justify-content:center; gap:8px;">
-              <label style="display:flex; align-items:center; gap:8px; font-size:0.8rem; color:#fff; cursor:pointer;">
-                <input type="checkbox" id="modalRelHashtags" ${hashtags ? 'checked' : ''} onchange="saveActiveModuleSchedule()"> Жанровые #хэштеги
+
+            <!-- Row 2: Quiet Hours Behavior & Sound Mode -->
+            <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap:10px;">
+              <div class="form-group" style="margin:0;">
+                <label class="form-label"><span>🌙 Поведение в тихие часы:</span></label>
+                <select id="modalRelQuietMode" onchange="saveActiveModuleSchedule()">
+                  <option value="skip" ${quietAction === 'skip' ? 'selected' : ''}>Отложить до утра (не публиковать ночью в канал)</option>
+                  <option value="silent" ${quietAction === 'silent' ? 'selected' : ''}>Публиковать без звука (Silent Push)</option>
+                </select>
+                <div style="font-size:0.7rem; color:var(--text-muted); margin-top:3px;">Что делать, если новая серия вышла посреди ночи</div>
+              </div>
+
+              <div class="form-group" style="margin:0;">
+                <label class="form-label"><span>🔔 Режим уведомления канала:</span></label>
+                <select id="modalRelSoundModeSelect" onchange="document.getElementById('modalRelSilentAll').checked = (this.value === 'silent'); saveActiveModuleSchedule();">
+                  <option value="normal" ${!silentAll ? 'selected' : ''}>Обычный (со звуком и пуш-уведомлением)</option>
+                  <option value="silent" ${silentAll ? 'selected' : ''}>Всегда тихо (Silent Push без звука и вибрации)</option>
+                </select>
+                <input type="checkbox" id="modalRelSilentAll" ${silentAll ? 'checked' : ''} style="display:none;" onchange="saveActiveModuleSchedule()">
+                <div style="font-size:0.7rem; color:var(--text-muted); margin-top:3px;">Отправка сообщений в Telegram-канал без звукового сигнала</div>
+              </div>
+            </div>
+
+            <!-- Row 3: Night Quiet Hours Window -->
+            <div style="background:rgba(255,255,255,0.03); border:1px solid var(--border-subtle); border-radius:8px; padding:10px 12px;">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:6px;">
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.83rem; color:#fff; cursor:pointer; font-weight:600; margin:0;">
+                  <input type="checkbox" id="modalRelQuietEnabled" ${quietEnabled ? 'checked' : ''} onchange="toggleRelQuietUI(); saveActiveModuleSchedule();">
+                  🌙 Ночной тихий режим (защита сна подписчиков канала)
+                </label>
+                <span style="font-size:0.7rem; color:var(--text-muted);">Часовой пояс: МСК (UTC+3)</span>
+              </div>
+              <div id="modalRelQuietRangeWrap" style="display:${quietEnabled ? 'grid' : 'none'}; grid-template-columns: 1fr 1fr; gap:10px; margin-top:6px;">
+                <div class="form-group" style="margin:0;">
+                  <label class="form-label" style="font-size:0.75rem;"><span>Начало тихого часа (вечер):</span></label>
+                  <select id="modalRelQuietStart" onchange="saveActiveModuleSchedule()">
+                    ${startOptions}
+                  </select>
+                </div>
+                <div class="form-group" style="margin:0;">
+                  <label class="form-label" style="font-size:0.75rem;"><span>Конец тихого часа (утро):</span></label>
+                  <select id="modalRelQuietEnd" onchange="saveActiveModuleSchedule()">
+                    ${endOptions}
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Row 4: Post Content Options -->
+            <div style="display:flex; flex-direction:column; gap:8px; background:rgba(255,255,255,0.02); border:1px solid var(--border-subtle); border-radius:8px; padding:10px 12px;">
+              <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.82rem; color:#fff; cursor:pointer; margin:0;">
+                <input type="checkbox" id="modalRelHashtags" ${hashtags ? 'checked' : ''} onchange="saveActiveModuleSchedule()" style="margin-top:2px;">
+                <span>🏷️ <b>Жанровые #хэштеги:</b> автоматически прикреплять кликабельные теги жанров из базы Shikimori (#онгоинг #приключения #фэнтези)</span>
               </label>
-              <label style="display:flex; align-items:center; gap:8px; font-size:0.8rem; color:#fff; cursor:pointer;">
-                <input type="checkbox" id="modalRelChat" ${showChat ? 'checked' : ''} onchange="saveActiveModuleSchedule()"> Кнопка обсуждения в чате
+              <label style="display:flex; align-items:flex-start; gap:8px; font-size:0.82rem; color:#fff; cursor:pointer; margin:0;">
+                <input type="checkbox" id="modalRelChat" ${showChat ? 'checked' : ''} onchange="saveActiveModuleSchedule()" style="margin-top:2px;">
+                <span>💬 <b>Кнопка чата:</b> прикреплять кнопку обсуждения серии в Telegram-сообществе</span>
               </label>
+              <div style="display:flex; align-items:flex-start; gap:8px; font-size:0.82rem; color:#fff; margin-top:4px; padding-top:6px; border-top:1px solid rgba(255,255,255,0.05);">
+                <span>📲</span>
+                <div>
+                  <b>Универсальный Deeplink плеер AnimeVist:</b>
+                  <div style="font-size:0.72rem; color:var(--text-muted); margin-top:2px;">
+                    Кнопка «🎬 Смотреть в приложении» с форматом <code>open.html?animeId=vost-{id}&episode={ep}</code> открывает нужную серию в AnimeVist на ПК и Android.
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         `;
@@ -2909,6 +3032,16 @@
       wrap.innerHTML = html;
       sw.checked = isEnabled;
       onModalEnabledChange(false);
+      toggleRelQuietUI();
+      togglePersQuietUI();
+    }
+
+    function toggleRelQuietUI() {
+      const ch = document.getElementById('modalRelQuietEnabled');
+      const wrap = document.getElementById('modalRelQuietRangeWrap');
+      if (ch && wrap) {
+        wrap.style.display = ch.checked ? 'grid' : 'none';
+      }
     }
 
     function togglePersQuietUI() {
@@ -2930,10 +3063,23 @@
       };
 
       if (mod === 'releases') {
-        const intervalInput = document.getElementById('modalRelInterval');
+        const intSelect = document.getElementById('modalRelIntervalSelect') || document.getElementById('modalRelInterval');
+        const maxSelect = document.getElementById('modalRelMaxPerCycle');
+        const quietEn = document.getElementById('modalRelQuietEnabled');
+        const quietStart = document.getElementById('modalRelQuietStart');
+        const quietEnd = document.getElementById('modalRelQuietEnd');
+        const quietMode = document.getElementById('modalRelQuietMode');
+        const silentAll = document.getElementById('modalRelSilentAll');
         const hashtagsInput = document.getElementById('modalRelHashtags');
         const chatInput = document.getElementById('modalRelChat');
-        if (intervalInput) payload.interval_sec = parseInt(intervalInput.value) || 300;
+
+        if (intSelect) payload.interval_sec = parseInt(intSelect.value) || 300;
+        if (maxSelect) payload.max_releases = parseInt(maxSelect.value) || 3;
+        if (quietEn) payload.quiet_hours_enabled = quietEn.checked;
+        if (quietStart) payload.quiet_start = parseInt(quietStart.value) || 23;
+        if (quietEnd) payload.quiet_end = parseInt(quietEnd.value) || 8;
+        if (quietMode) payload.quiet_mode = quietMode.value || 'skip';
+        if (silentAll) payload.silent_all = silentAll.checked;
         if (hashtagsInput) payload.include_hashtags = hashtagsInput.checked;
         if (chatInput) payload.show_chat = chatInput.checked;
       } else if (mod === 'compilation') {
@@ -2963,15 +3109,57 @@
         if (strictEl) payload.strict_matching = strictEl.checked;
       }
 
-      showToast(`💾 Сохранение расписания [${mod}] в Supabase...`, 'info');
+      showToast(`💾 Сохранение расписания [${mod}]...`, 'info');
 
       try {
-        const res = await fetch('/api/save-module-schedule', {
+        let res = await fetch('/api/save-module-schedule', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify(payload)
         });
-        const d = await res.json();
+        let d;
+        if (res.status === 404 && currentConfig) {
+          // Automatic Cloudflare Worker fallback
+          const ann = currentConfig.announcer || (currentConfig.announcer = {});
+          if (mod === 'releases') {
+            ann.enable_series_releases = isEnabled;
+            if (payload.interval_sec) ann.check_interval_seconds = payload.interval_sec;
+            if (payload.max_releases) ann.max_releases_per_cycle = payload.max_releases;
+            if (payload.quiet_hours_enabled !== undefined) ann.releases_quiet_hours_enabled = payload.quiet_hours_enabled;
+            if (payload.quiet_start !== undefined) ann.releases_quiet_hours_start = payload.quiet_start;
+            if (payload.quiet_end !== undefined) ann.releases_quiet_hours_end = payload.quiet_end;
+            if (payload.quiet_mode !== undefined) ann.releases_quiet_action = payload.quiet_mode;
+            if (payload.silent_all !== undefined) ann.releases_silent_notifications = payload.silent_all;
+            if (payload.include_hashtags !== undefined) ann.include_genre_hashtags = payload.include_hashtags;
+            if (payload.show_chat !== undefined) ann.show_chat_button = payload.show_chat;
+          } else if (mod === 'personal') {
+            ann.enable_personal_notifications = isEnabled;
+            if (payload.interval_minutes) ann.personal_interval_minutes = payload.interval_minutes;
+            if (payload.cooldown_hours !== undefined) ann.personal_user_cooldown_hours = payload.cooldown_hours;
+            if (payload.max_per_user !== undefined) ann.personal_max_episodes_per_user = payload.max_per_user;
+            if (payload.quiet_hours_enabled !== undefined) ann.personal_quiet_hours_enabled = payload.quiet_hours_enabled;
+            if (payload.quiet_start !== undefined) ann.personal_quiet_hours_start = payload.quiet_start;
+            if (payload.quiet_end !== undefined) ann.personal_quiet_hours_end = payload.quiet_end;
+            if (payload.quiet_mode !== undefined) ann.personal_quiet_action = payload.quiet_mode;
+            if (payload.batch_digest !== undefined) ann.personal_batch_digest = payload.batch_digest;
+            if (payload.silent_all !== undefined) ann.personal_silent_notifications = payload.silent_all;
+            if (payload.strict_matching !== undefined) ann.personal_strict_matching = payload.strict_matching;
+          } else if (mod === 'compilation') {
+            ann.enable_compilations = isEnabled;
+            if (payload.interval_hours) ann.compilations_interval_hours = payload.interval_hours;
+          } else if (mod === 'news') {
+            ann.enable_anime_news = isEnabled;
+          }
+          const cfRes = await fetch('/api/bot/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(currentConfig)
+          });
+          d = await cfRes.json();
+          d.config = currentConfig;
+        } else {
+          d = await res.json();
+        }
         if (d.ok) {
           showToast(`✅ Расписание модуля [${mod}] успешно сохранено и синхронизировано!`, 'success');
           if (d.config) {
@@ -3177,8 +3365,49 @@
       const btnUrlEl = document.getElementById('modalBtnUrl');
 
       if (mod === 'releases') {
+        const ann = (currentConfig && currentConfig.announcer) || {};
+        const isRelAutoOn = ann.enable_series_releases !== false;
+        const relSec = ann.check_interval_seconds || 300;
+        const relMins = Math.round(relSec / 60);
+        const relIntervalLabel = relMins >= 60 ? (relMins / 60) + ' ч' : relMins + ' мин';
+        const relMaxPerCycle = ann.max_releases_per_cycle !== undefined ? ann.max_releases_per_cycle : 3;
+        const relMaxLabel = relMaxPerCycle >= 999 ? 'без ограничений' : `до ${relMaxPerCycle} серий/цикл`;
+        const relQuietOn = ann.releases_quiet_hours_enabled !== false;
+        const relQuietStart = ann.releases_quiet_hours_start !== undefined ? ann.releases_quiet_hours_start : 23;
+        const relQuietEnd = ann.releases_quiet_hours_end !== undefined ? ann.releases_quiet_hours_end : 8;
+        const relQuietAction = ann.releases_quiet_action || 'skip';
+        const relQuietModeLabel = relQuietAction === 'skip' ? 'Отложить до утра' : 'Без звука';
+        const relQuietText = relQuietOn ? `🌙 Ночь: ${relQuietStart}:00–${relQuietEnd}:00 МСК (${relQuietModeLabel})` : '🌙 Ночной режим: Выкл';
+        const relSilentAll = ann.releases_silent_notifications === true;
+        const relSoundText = relSilentAll ? '🔕 Все посты без звука' : '🔔 Со звуком';
+        const relHashtags = ann.include_genre_hashtags !== false ? '#хэштеги: Вкл' : '#хэштеги: Выкл';
+
+        const scheduleBannerHtml = `
+          <div style="background:rgba(56,189,248,0.06); border:1px solid rgba(56,189,248,0.22); border-radius:8px; padding:10px 12px; margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <div>
+                <div style="font-weight:700; font-size:0.84rem; color:var(--accent-cyan); display:flex; align-items:center; gap:6px;">
+                  <span>⏱️ Авто-Расписание & Правила Выпуска Онгоингов</span>
+                  <span class="module-badge ${isRelAutoOn ? 'on' : 'off'}" style="font-size:0.68rem;">${isRelAutoOn ? 'Авто-режим активен' : 'Выключен'}</span>
+                </div>
+                <div style="font-size:0.74rem; color:var(--text-secondary); margin-top:3px; display:flex; flex-wrap:wrap; gap:10px;">
+                  <span>⏱ Опрос: <b>каждые ${relIntervalLabel}</b></span>
+                  <span>📊 Лимит: <b>${relMaxLabel}</b></span>
+                  <span>${relQuietText}</span>
+                  <span>${relSoundText}</span>
+                  <span>${relHashtags}</span>
+                </div>
+              </div>
+              <button type="button" class="btn btn-outline btn-xs" onclick="switchModalTab('schedule')" style="color:var(--accent-cyan); border-color:rgba(56,189,248,0.4); font-size:0.75rem; padding:4px 10px;">
+                ⚙️ Настроить Авто-Расписание 24/7 →
+              </button>
+            </div>
+          </div>
+        `;
+
         if (!Array.isArray(data) || data.length === 0) {
           wrap.innerHTML = `
+            ${scheduleBannerHtml}
             <div style="padding:14px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); border-radius:8px; color:#6ee7b7; font-size:0.84rem; line-height:1.5;">
               🎉 <b>Все недавние серии уже опубликованы!</b><br>
               Новых неанонсированных эпизодов в AnimeVost на данный момент нет. Автоматический фоновый цикл ожидает выхода свежих серий.
@@ -3196,6 +3425,7 @@
         const initialMode = currentSeriesViewMode;
 
         let html = `
+          ${scheduleBannerHtml}
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; gap:8px;">
             <div style="display:flex; align-items:center; gap:6px;">
               <label class="form-label" style="margin:0; font-size:0.75rem;"><span>${modeLabel}</span></label>
