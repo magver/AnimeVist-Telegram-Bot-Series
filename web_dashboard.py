@@ -47,6 +47,7 @@ daemon_paused = False
 last_check_time = None
 last_compilation_time = load_last_compilation_time()
 last_personal_check_time = 0
+last_news_check_time = 0
 server_start_time = time.time()
 cached_bot_info = None
 cached_chat_info = None
@@ -62,7 +63,7 @@ def log_event(message, level="info"):
     print(f"[{timestamp}] [{level.upper()}] {message}")
 
 def background_monitoring_worker():
-    global last_check_time, last_compilation_time, last_personal_check_time, daemon_running, daemon_paused
+    global last_check_time, last_compilation_time, last_personal_check_time, last_news_check_time, daemon_running, daemon_paused
     log_event("Служба автономного мониторинга 24/7 инициализирована", "success")
 
     while daemon_running:
@@ -77,11 +78,29 @@ def background_monitoring_worker():
                     if cnt > 0:
                         log_event(f"Опубликовано новых серий в канал: {cnt}", "success")
 
-                # 2. Check Anime News
+                # 2. Check Anime News (smart schedule, quiet hours, anti-flood)
                 if ann_conf.get('enable_anime_news', True):
-                    cnt_n = run_news_check()
-                    if cnt_n > 0:
-                        log_event(f"Опубликовано аниме-новостей: {cnt_n}", "success")
+                    n_interval_min = float(ann_conf.get('news_check_interval_minutes', 60))
+                    n_interval_sec = max(60, n_interval_min * 60)
+                    if time.time() - last_news_check_time >= n_interval_sec:
+                        is_quiet = False
+                        if ann_conf.get('news_quiet_hours_enabled', True):
+                            now_hour = (time.gmtime().tm_hour + 3) % 24  # MSK UTC+3
+                            q_start = int(ann_conf.get('news_quiet_hours_start', 23))
+                            q_end = int(ann_conf.get('news_quiet_hours_end', 8))
+                            if q_start > q_end:
+                                is_quiet = (now_hour >= q_start or now_hour < q_end)
+                            else:
+                                is_quiet = (q_start <= now_hour < q_end)
+
+                        if is_quiet and ann_conf.get('news_quiet_action', 'skip') == 'skip':
+                            log_event("Авто-цикл новостей: ночной тихий час МСК (публикация отложена до утра)")
+                            last_news_check_time = time.time()
+                        else:
+                            cnt_n = run_news_check()
+                            if cnt_n > 0:
+                                log_event(f"Опубликовано аниме-новостей: {cnt_n}", "success")
+                            last_news_check_time = time.time()
 
                 # 3. Check Compilations
                 if ann_conf.get('enable_compilations', True):
@@ -89,11 +108,29 @@ def background_monitoring_worker():
                     if last_compilation_time == 0:
                         last_compilation_time = load_last_compilation_time()
                     if time.time() - last_compilation_time >= comp_hours * 3600:
-                        log_event("Авто-цикл: публикация плановой Топ-подборки аниме...")
-                        res_c = run_compilation_post()
-                        if res_c.get('ok'):
-                            log_event(f"Опубликована подборка: {res_c.get('theme')}", "success")
-                        last_compilation_time = time.time()
+                        is_quiet = False
+                        if ann_conf.get('compilations_quiet_hours_enabled', True):
+                            now_hour = (time.gmtime().tm_hour + 3) % 24  # MSK UTC+3
+                            q_start = int(ann_conf.get('compilations_quiet_hours_start', 23))
+                            q_end = int(ann_conf.get('compilations_quiet_hours_end', 8))
+                            if q_start > q_end:
+                                is_quiet = (now_hour >= q_start or now_hour < q_end)
+                            else:
+                                is_quiet = (q_start <= now_hour < q_end)
+
+                        if is_quiet and ann_conf.get('compilations_quiet_action', 'skip') == 'skip':
+                            log_event("Авто-цикл подборок: ночной тихий час МСК (публикация отложена до утра)")
+                            last_compilation_time = time.time() - (comp_hours * 3600) + 1800  # retry in 30 mins
+                        else:
+                            log_event("Авто-цикл: публикация плановой Топ-подборки аниме...")
+                            rot_mode = ann_conf.get('compilations_rotation_mode', 'round_robin')
+                            c_count = int(ann_conf.get('compilations_default_count', 4))
+                            chosen_genre = None if rot_mode in ['round_robin', 'auto', 'random'] else rot_mode
+                            silent_post = is_quiet or ann_conf.get('compilations_silent_notifications', False)
+                            res_c = run_compilation_post(genre_key=chosen_genre, count=c_count, silent=silent_post)
+                            if res_c.get('ok'):
+                                log_event(f"Опубликована подборка: {res_c.get('theme')} ({res_c.get('count')} аниме)", "success")
+                            last_compilation_time = time.time()
 
                 # 4. Check Personal Notifications (configurable interval, default 60 mins)
                 if ann_conf.get('enable_personal_notifications', True):
@@ -293,6 +330,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._send_json(get_pinned_navigator_preview())
             else:
                 self._send_json({"error": "unknown module"})
+        elif path == "/api/proxy-image":
+            query_components = urllib.parse.parse_qs(parsed.query)
+            target_url = query_components.get('url', [''])[0]
+            if not target_url or not target_url.startswith('http'):
+                self._send_error(400, "Invalid url")
+                return
+            try:
+                req = urllib.request.Request(
+                    target_url,
+                    headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Referer': target_url
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    data_bytes = resp.read()
+                    ctype = resp.headers.get('Content-Type', 'image/jpeg')
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Cache-Control", "public, max-age=86400")
+                    self.end_headers()
+                    self.wfile.write(data_bytes)
+                    return
+            except Exception as e:
+                self._send_error(500, str(e))
+                return
 
         elif path.startswith("/assets/"):
             rel_p = path.lstrip("/").replace('\\', '/')
@@ -375,6 +439,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if 'enable_news' in data: ann['enable_anime_news'] = bool(data['enable_news'])
             if 'enable_compilations' in data: ann['enable_compilations'] = bool(data['enable_compilations'])
             if 'compilations_interval_hours' in data: ann['compilations_interval_hours'] = max(1.0, float(data['compilations_interval_hours']))
+            if 'compilations_default_count' in data: ann['compilations_default_count'] = max(3, min(5, int(data['compilations_default_count'])))
+            if 'compilations_rotation_mode' in data: ann['compilations_rotation_mode'] = str(data['compilations_rotation_mode'])
+            if 'compilations_quiet_hours_enabled' in data: ann['compilations_quiet_hours_enabled'] = bool(data['compilations_quiet_hours_enabled'])
+            if 'compilations_quiet_hours_start' in data: ann['compilations_quiet_hours_start'] = int(data['compilations_quiet_hours_start'])
+            if 'compilations_quiet_hours_end' in data: ann['compilations_quiet_hours_end'] = int(data['compilations_quiet_hours_end'])
+            if 'compilations_quiet_action' in data: ann['compilations_quiet_action'] = str(data['compilations_quiet_action'])
+            if 'compilations_silent_notifications' in data: ann['compilations_silent_notifications'] = bool(data['compilations_silent_notifications'])
             if 'enable_personal' in data: ann['enable_personal_notifications'] = bool(data['enable_personal'])
 
             save_config(config, sync_to_cloud=True)
@@ -535,9 +606,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if 'show_chat' in data: ann['show_chat_button'] = bool(data['show_chat'])
             elif mod == 'news':
                 if 'enabled' in data: ann['enable_anime_news'] = bool(data['enabled'])
+                if 'interval_minutes' in data: ann['news_check_interval_minutes'] = max(5, int(data['interval_minutes']))
+                if 'max_news' in data: ann['max_news_per_cycle'] = max(1, int(data['max_news']))
+                if 'quiet_hours_enabled' in data: ann['news_quiet_hours_enabled'] = bool(data['quiet_hours_enabled'])
+                if 'quiet_start' in data: ann['news_quiet_hours_start'] = int(data['quiet_start'])
+                if 'quiet_end' in data: ann['news_quiet_hours_end'] = int(data['quiet_end'])
+                if 'quiet_mode' in data: ann['news_quiet_action'] = str(data['quiet_mode'])
+                if 'silent_all' in data: ann['news_silent_notifications'] = bool(data['silent_all'])
             elif mod == 'compilation':
                 if 'enabled' in data: ann['enable_compilations'] = bool(data['enabled'])
                 if 'interval_hours' in data: ann['compilations_interval_hours'] = max(1.0, float(data['interval_hours']))
+                if 'default_count' in data: ann['compilations_default_count'] = max(3, min(5, int(data['default_count'])))
+                if 'rotation_mode' in data: ann['compilations_rotation_mode'] = str(data['rotation_mode'])
+                if 'quiet_hours_enabled' in data: ann['compilations_quiet_hours_enabled'] = bool(data['quiet_hours_enabled'])
+                if 'quiet_start' in data: ann['compilations_quiet_hours_start'] = int(data['quiet_start'])
+                if 'quiet_end' in data: ann['compilations_quiet_hours_end'] = int(data['quiet_end'])
+                if 'quiet_mode' in data: ann['compilations_quiet_action'] = str(data['quiet_mode'])
+                if 'silent_all' in data: ann['compilations_silent_notifications'] = bool(data['silent_all'])
             elif mod == 'personal':
                 if 'enabled' in data: ann['enable_personal_notifications'] = bool(data['enabled'])
                 if 'interval_minutes' in data: ann['personal_interval_minutes'] = max(5, int(data['interval_minutes']))
