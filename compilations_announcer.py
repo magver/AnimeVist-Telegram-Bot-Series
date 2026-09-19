@@ -14,7 +14,13 @@ import random
 import urllib.request
 import re
 import math
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+try:
+    from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+    HAS_PIL = True
+except ImportError:
+    Image = ImageDraw = ImageFont = ImageFilter = ImageEnhance = None
+    HAS_PIL = False
+
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -4375,12 +4381,23 @@ def download_image(url):
         return Image.open(io.BytesIO(resp.read()))
 
 def _get_font(size, bold=True):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    bundled_bold = os.path.join(base_dir, 'assets', 'fonts', 'font_bold.ttf')
+    bundled_reg = os.path.join(base_dir, 'assets', 'fonts', 'font_regular.ttf')
+
+    bundled = bundled_bold if bold else bundled_reg
+    if os.path.isfile(bundled):
+        try:
+            return ImageFont.truetype(bundled, size)
+        except Exception:
+            pass
+
     candidates = [
         "C:/Windows/Fonts/segoeuib.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf",
         "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf" if bold else "/usr/share/fonts/truetype/freefont/FreeSans.ttf",
     ]
     for p in candidates:
         if os.path.exists(p):
@@ -4399,50 +4416,363 @@ def draw_vector_star(draw, cx, cy, r_outer=7.2, r_inner=3.4, color=(251, 191, 36
         points.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
     draw.polygon(points, fill=color)
 
-def create_light_colorful_background(width, height):
-    """
-    Creates a beautiful, soft, light pastel gradient background:
-    Soft periwinkle lilac -> soft wisteria -> delicate blush pink -> warm soft peach -> airy sky cyan
-    with gentle luminous ambient orbs.
-    """
-    base = Image.new("RGBA", (width, height))
-    draw = ImageDraw.Draw(base)
-    stops = [
-        (199, 210, 254),  # #c7d2fe (soft celestial periwinkle)
-        (221, 214, 254),  # #ddd6fe (soft wisteria lilac)
-        (251, 207, 232),  # #fbcfe8 (delicate blush pink)
-        (254, 215, 170),  # #fed7aa (warm soft peach)
-        (186, 230, 253)   # #bae6fd (airy sky cyan)
+def draw_vector_bolt(draw, cx, cy, h=14, color=(255, 255, 255, 255)):
+    """Draws a vector lightning bolt polygon."""
+    pts = [
+        (cx + 2, cy - h // 2),
+        (cx - h // 3, cy + 1),
+        (cx, cy + 1),
+        (cx - 2, cy + h // 2),
+        (cx + h // 3, cy - 1),
+        (cx, cy - 1)
     ]
+    draw.polygon(pts, fill=color)
+
+def draw_vector_play(draw, cx, cy, size=11, color=(255, 255, 255, 255)):
+    """Draws a crisp anti-aliased vector play triangle."""
+    half = size / 2.0
+    pts = [
+        (cx - half * 0.75, cy - half),
+        (cx + half * 0.95, cy),
+        (cx - half * 0.75, cy + half)
+    ]
+    draw.polygon(pts, fill=color)
+
+_episodes_cache = {}
+EPISODES_CACHE_FILE = os.path.join(os.path.dirname(__file__), 'anime_episodes_cache.json')
+
+def load_episodes_cache():
+    global _episodes_cache
+    if not _episodes_cache and os.path.exists(EPISODES_CACHE_FILE):
+        try:
+            with open(EPISODES_CACHE_FILE, 'r', encoding='utf-8') as f:
+                _episodes_cache = json.load(f)
+        except Exception:
+            _episodes_cache = {}
+    return _episodes_cache
+
+def save_episodes_cache():
+    try:
+        with open(EPISODES_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(_episodes_cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def get_anime_episode_ratio(item):
+    """
+    Returns formatted episode ratio: e.g. '12 / 12 сер.', '1 / 1 фильм', '24 / 24 сер.'.
+    """
+    if not item:
+        return "12 / 12 сер."
+    if 'ep_text' in item and item['ep_text']:
+        return str(item['ep_text'])
+    if 'episodes' in item and item['episodes']:
+        eps = item['episodes']
+        if eps == 1:
+            return "1 / 1 фильм"
+        return f"{eps} / {eps} сер."
+
+    anime_id = str(item.get('id', ''))
+    cache = load_episodes_cache()
+    if anime_id and anime_id in cache:
+        return cache[anime_id]
+
+    if anime_id and anime_id.isdigit():
+        try:
+            url = f"https://shikimori.one/api/animes/{anime_id}"
+            req = urllib.request.Request(url, headers={'User-Agent': 'AnimeVistBot/2.0'})
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                d = json.loads(resp.read().decode('utf-8'))
+                eps = d.get('episodes') or 0
+                aired = d.get('episodes_aired') or 0
+                kind = str(d.get('kind', '')).lower()
+                status = str(d.get('status', '')).lower()
+
+                if kind == 'movie' or eps == 1:
+                    ratio_str = "1 / 1 фильм"
+                elif status == 'released' and eps > 0:
+                    ratio_str = f"{eps} / {eps} сер."
+                elif eps > 0 and aired > 0 and aired < eps:
+                    ratio_str = f"{aired} / {eps} сер."
+                elif eps > 0:
+                    ratio_str = f"{eps} / {eps} сер."
+                elif aired > 0:
+                    ratio_str = f"{aired} сер."
+                else:
+                    ratio_str = "12 / 12 сер."
+
+                cache[anime_id] = ratio_str
+                save_episodes_cache()
+                return ratio_str
+        except Exception:
+            pass
+
+    return "12 / 12 сер."
+
+def create_cyberpunk_background(width, height):
+    """
+    Creates a deep midnight dark background (#080b11 -> #0d1322)
+    with luminous cyberpunk ambient orbs (Cyan & Violet/Indigo).
+    """
+    base = Image.new("RGBA", (width, height), (8, 11, 17, 255))
+    draw = ImageDraw.Draw(base)
+
     for y in range(height):
-        for x in range(0, width, 4):
-            factor = (x * 0.45 + y * 0.55) / (width * 0.45 + height * 0.55)
-            seg = factor * 4.0
-            idx = min(int(seg), 3)
-            f = seg - idx
-            cA = stops[idx]
-            cB = stops[idx + 1]
-            r = int(cA[0] + (cB[0] - cA[0]) * f)
-            g = int(cA[1] + (cB[1] - cA[1]) * f)
-            b = int(cA[2] + (cB[2] - cA[2]) * f)
-            draw.rectangle([x, y, x + 3, y], fill=(r, g, b, 255))
+        factor = y / float(height)
+        r = int(8 + 6 * factor)
+        g = int(11 + 7 * factor)
+        b = int(17 + 16 * factor)
+        draw.line([(0, y), (width, y)], fill=(r, g, b, 255))
 
-    # Gentle luminous ambient orbs
     orbs = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    draw_o = ImageDraw.Draw(orbs)
-    draw_o.ellipse((width - 320, -60, width + 120, 380), fill=(186, 230, 253, 110))
-    draw_o.ellipse((-80, height - 380, 380, height + 80), fill=(251, 207, 232, 100))
-    draw_o.ellipse((width // 2 - 180, height // 2 - 180, width // 2 + 180, height // 2 + 180), fill=(254, 240, 138, 70))
-    orbs = orbs.filter(ImageFilter.GaussianBlur(65))
-    base = Image.alpha_composite(base, orbs)
+    o_draw = ImageDraw.Draw(orbs)
+    o_draw.ellipse((-100, -80, int(width * 0.45), int(height * 0.35)), fill=(0, 229, 255, 38))
+    o_draw.ellipse((int(width * 0.6), int(height * 0.25), width + 120, int(height * 0.75)), fill=(168, 85, 247, 36))
+    o_draw.ellipse((-80, int(height * 0.65), int(width * 0.5), height + 100), fill=(99, 102, 241, 42))
+    o_draw.ellipse((int(width * 0.35), int(height * 0.4), int(width * 0.75), int(height * 0.85)), fill=(244, 63, 94, 25))
 
+    orbs = orbs.filter(ImageFilter.GaussianBlur(85))
+    base = Image.alpha_composite(base, orbs)
     return base
+
+def render_compilation_poster_card(raw_img, item, idx, card_w, card_h):
+    """
+    Renders an anime poster card with the exact floating frosted-glass card design
+    from series_announcer (episode releases):
+    - Upper placement (~4.5% from top)
+    - Dynamic word-wrapped bold Russian title (max 2 lines)
+    - Badges row: Blue Pill with Vector Bolt (#Rank) & Amber Pill with Vector Star (Score)
+    - Glowing AnimeVist Fox logo on the right side of the card
+    - Frosted glass backdrop with cyberpunk indigo tint, ambient glow & drop shadow
+    - Outer poster frame with glowing indigo outline & rounded corners
+    """
+    # 1. High-fidelity Lanczos resize & sharpening
+    poster_scaled = raw_img.resize((card_w, card_h), Image.Resampling.LANCZOS)
+    poster_scaled = poster_scaled.filter(ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=2))
+
+    # 2. Smooth gradient at top 45% of poster for plate contrast
+    top_overlay = Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
+    to_draw = ImageDraw.Draw(top_overlay)
+    grad_h = int(card_h * 0.45)
+    for y in range(grad_h):
+        factor = 1.0 - (y / float(grad_h))
+        alpha = int(225 * (factor ** 1.35))
+        to_draw.line([(0, y), (card_w, y)], fill=(6, 9, 18, alpha))
+    poster_im = Image.alpha_composite(poster_scaled, top_overlay)
+
+    # 3. Card layout & dimensions matching series_announcer
+    card_margin_x = int(card_w * 0.04)
+    plate_w = card_w - (card_margin_x * 2)
+    plate_r = int(card_w * 0.028)
+    plate_y = int(card_h * 0.045)
+
+    # Typography
+    title_font_sz = max(18, int(card_w * 0.041))
+    badge_font_sz = max(14, int(card_w * 0.029))
+
+    font_title = _get_font(title_font_sz, bold=True)
+    font_badge = _get_font(badge_font_sz, bold=True)
+
+    pad_x = int(card_w * 0.04)
+    pad_y = int(card_w * 0.032)
+    badge_row_h = int(badge_font_sz * 1.8)
+
+    # Logo
+    logo_path = os.path.join(os.path.dirname(__file__), 'assets', 'logo.png')
+    has_logo = os.path.isfile(logo_path)
+    logo_img = None
+    if has_logo:
+        try:
+            logo_img = Image.open(logo_path).convert("RGBA")
+        except Exception:
+            has_logo = False
+
+    dummy = ImageDraw.Draw(poster_im)
+    title_ru = item.get('ru') or item.get('en') or 'Аниме'
+
+    est_plate_h = pad_y * 2 + title_font_sz * 2 + int(title_font_sz * 0.28) + int(card_w * 0.018) + badge_row_h
+    logo_size = int(est_plate_h * 0.86) if has_logo else 0
+
+    max_tw = (plate_w - logo_size - pad_x * 2 - int(card_w * 0.025)) if has_logo else (plate_w - pad_x * 2)
+    words = title_ru.split()
+    lines = []
+    cur_line = []
+    for w in words:
+        test_line = " ".join(cur_line + [w])
+        bbox = dummy.textbbox((0, 0), test_line, font=font_title)
+        if bbox[2] - bbox[0] <= max_tw:
+            cur_line.append(w)
+        else:
+            if cur_line:
+                lines.append(" ".join(cur_line))
+            cur_line = [w]
+    if cur_line:
+        lines.append(" ".join(cur_line))
+    lines = lines[:2]
+    if len(words) > 0 and len(lines) == 2 and words[-1] not in lines[1]:
+        lines[1] = lines[1][:max(0, len(lines[1]) - 3)] + '...'
+
+    line_spacing = int(title_font_sz * 0.26)
+    title_total_h = len(lines) * title_font_sz + (len(lines) - 1) * line_spacing
+    plate_h = pad_y * 2 + title_total_h + int(card_w * 0.018) + badge_row_h
+
+    if has_logo:
+        logo_size = int(plate_h * 0.86)
+        logo_rx = plate_w - pad_x - logo_size
+        logo_ry = (plate_h - logo_size) // 2
+
+    # Frosted Glass Crop
+    bg_crop = poster_im.crop((card_margin_x, plate_y, card_margin_x + plate_w, plate_y + plate_h))
+    blurred = bg_crop.filter(ImageFilter.GaussianBlur(20))
+    enh_b = ImageEnhance.Brightness(blurred).enhance(0.42)
+    enh_c = ImageEnhance.Color(enh_b).enhance(1.4)
+
+    plate = Image.new("RGBA", (plate_w, plate_h), (0, 0, 0, 0))
+    p_mask = Image.new("L", (plate_w, plate_h), 0)
+    ImageDraw.Draw(p_mask).rounded_rectangle((0, 0, plate_w - 1, plate_h - 1), radius=plate_r, fill=255)
+    plate.paste(enh_c, (0, 0), p_mask)
+
+    # Tint & Glow
+    tint = Image.new("RGBA", (plate_w, plate_h), (0, 0, 0, 0))
+    t_draw = ImageDraw.Draw(tint)
+    for y in range(plate_h):
+        ratio = y / float(plate_h)
+        r = int(10 + 6 * ratio)
+        g = int(14 + 2 * ratio)
+        b = int(28 + 8 * ratio)
+        a = int(220 + 20 * ratio)
+        t_draw.line([(0, y), (plate_w, y)], fill=(r, g, b, a))
+
+    glow = Image.new("RGBA", (plate_w, plate_h), (0, 0, 0, 0))
+    g_draw = ImageDraw.Draw(glow)
+    g_draw.ellipse((-int(plate_w * 0.05), -int(plate_h * 0.3), int(plate_w * 0.4), int(plate_h * 0.8)), fill=(0, 229, 255, 30))
+    if has_logo:
+        g_draw.ellipse((logo_rx - 15, logo_ry - 15, logo_rx + logo_size + 15, logo_ry + logo_size + 15), fill=(236, 72, 153, 40))
+        g_draw.ellipse((logo_rx - 8, logo_ry - 8, logo_rx + logo_size + 8, logo_ry + logo_size + 8), fill=(0, 229, 255, 35))
+    glow = glow.filter(ImageFilter.GaussianBlur(int(plate_h * 0.3)))
+    tint = Image.alpha_composite(tint, glow)
+    plate.paste(tint, (0, 0), p_mask)
+
+    # Highlights & Borders
+    p_draw = ImageDraw.Draw(plate)
+    p_draw.rounded_rectangle((0, 0, plate_w - 1, plate_h - 1), radius=plate_r, fill=None, outline=(99, 102, 241, 190), width=2)
+    p_draw.line([(plate_r + 2, 1), (plate_w - plate_r - 2, 1)], fill=(255, 255, 255, 175), width=1)
+    p_draw.line([(1, plate_r + 2), (1, int(plate_h * 0.7))], fill=(0, 229, 255, 140), width=1)
+
+    # Title lines
+    curr_y = pad_y
+    for line in lines:
+        p_draw.text((pad_x + 1, curr_y + 1), line, fill=(0, 0, 0, 210), font=font_title)
+        p_draw.text((pad_x, curr_y), line, fill=(255, 255, 255, 255), font=font_title)
+        curr_y += title_font_sz + line_spacing
+
+    curr_y += int(card_w * 0.014)
+
+    # 3 Badges with exact vertical and horizontal centering relative to icons:
+    # 1) Номер постера: Blue pill with ⚡ (#01)
+    # 2) Количество серий: Indigo pill with ▶ (10 / 10 сер. or 1 / 1 фильм)
+    # 3) Рейтинг: Amber pill with ★ (8.50)
+    pill_h = badge_row_h
+    pill_r = pill_h // 2
+    pill_cy = curr_y + pill_h / 2.0
+    pill_gap = max(5, int(card_w * 0.012))
+    pad_pill_x = max(6, int(pill_h * 0.35))
+    icon_text_gap = max(4, int(badge_font_sz * 0.35))
+
+    # Badge 1: Номер постера
+    cur_x = pad_x
+    rank_text = f"#{idx:02d}"
+    r_bbox = p_draw.textbbox((0, 0), rank_text, font=font_badge, anchor='lm')
+    r_tw = r_bbox[2] - r_bbox[0]
+    bolt_h = int(badge_font_sz * 0.85)
+    bolt_w = int(bolt_h * 0.6)
+    rank_pill_w = pad_pill_x * 2 + bolt_w + icon_text_gap + r_tw
+
+    p_draw.rounded_rectangle(
+        (cur_x, curr_y, cur_x + rank_pill_w, curr_y + pill_h),
+        radius=pill_r,
+        fill=(37, 99, 235, 230),
+        outline=(96, 165, 250, 255),
+        width=1
+    )
+    bolt_cx = cur_x + pad_pill_x + bolt_w / 2.0
+    draw_vector_bolt(p_draw, bolt_cx, pill_cy, h=bolt_h, color=(255, 255, 255, 255))
+    p_draw.text((cur_x + pad_pill_x + bolt_w + icon_text_gap, pill_cy), rank_text, fill=(255, 255, 255, 255), font=font_badge, anchor='lm')
+
+    cur_x += rank_pill_w + pill_gap
+
+    # Badge 2: Количество серий ("сколько серий / из сколька")
+    eps_text = get_anime_episode_ratio(item)
+    e_bbox = p_draw.textbbox((0, 0), eps_text, font=font_badge, anchor='lm')
+    e_tw = e_bbox[2] - e_bbox[0]
+    play_size = int(badge_font_sz * 0.75)
+    play_w = int(play_size * 0.85)
+    eps_pill_w = pad_pill_x * 2 + play_w + icon_text_gap + e_tw
+
+    p_draw.rounded_rectangle(
+        (cur_x, curr_y, cur_x + eps_pill_w, curr_y + pill_h),
+        radius=pill_r,
+        fill=(99, 102, 241, 230),
+        outline=(165, 180, 252, 255),
+        width=1
+    )
+    play_cx = cur_x + pad_pill_x + play_w / 2.0
+    draw_vector_play(p_draw, play_cx, pill_cy, size=play_size, color=(255, 255, 255, 255))
+    p_draw.text((cur_x + pad_pill_x + play_w + icon_text_gap, pill_cy), eps_text, fill=(255, 255, 255, 255), font=font_badge, anchor='lm')
+
+    cur_x += eps_pill_w + pill_gap
+
+    # Badge 3: Рейтинг
+    score_val = str(item.get('score', '')) or '—'
+    s_bbox = p_draw.textbbox((0, 0), score_val, font=font_badge, anchor='lm')
+    s_tw = s_bbox[2] - s_bbox[0]
+    star_dia = int(badge_font_sz * 0.8)
+    rate_pill_w = pad_pill_x * 2 + star_dia + icon_text_gap + s_tw
+
+    p_draw.rounded_rectangle(
+        (cur_x, curr_y, cur_x + rate_pill_w, curr_y + pill_h),
+        radius=pill_r,
+        fill=(217, 119, 6, 230),
+        outline=(251, 191, 36, 255),
+        width=1
+    )
+    star_cx = cur_x + pad_pill_x + star_dia / 2.0
+    draw_vector_star(p_draw, star_cx, pill_cy, r_outer=star_dia / 2.0, r_inner=(star_dia / 2.0) * 0.48, color=(255, 255, 255, 255))
+    p_draw.text((cur_x + pad_pill_x + star_dia + icon_text_gap, pill_cy), score_val, fill=(255, 255, 255, 255), font=font_badge, anchor='lm')
+
+    # Logo paste inside plate
+    if has_logo and logo_img:
+        logo_resized = logo_img.resize((logo_size, logo_size), Image.Resampling.LANCZOS)
+        plate.paste(logo_resized, (logo_rx, logo_ry), logo_resized)
+
+    # Shadow under plate
+    shadow = Image.new("RGBA", (plate_w + 24, plate_h + 24), (0, 0, 0, 0))
+    sh_draw = ImageDraw.Draw(shadow)
+    sh_draw.rounded_rectangle((12, 12, plate_w + 12, plate_h + 12), radius=plate_r, fill=(0, 0, 0, 220))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(12))
+    poster_im.paste(shadow, (card_margin_x - 12, plate_y - 8), shadow)
+    poster_im.paste(plate, (card_margin_x, plate_y), plate)
+
+    # Outer frame of the whole poster
+    r_card = 16
+    card_mask = Image.new("L", (card_w, card_h), 0)
+    ImageDraw.Draw(card_mask).rounded_rectangle((0, 0, card_w - 1, card_h - 1), radius=r_card, fill=255)
+
+    c_frame = Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
+    cf_draw = ImageDraw.Draw(c_frame)
+    cf_draw.rounded_rectangle((0, 0, card_w - 1, card_h - 1), radius=r_card, outline=(99, 102, 241, 190), width=2)
+    cf_draw.line([(r_card + 4, 1), (card_w - r_card - 4, 1)], fill=(255, 255, 255, 160), width=1)
+    poster_final = Image.alpha_composite(poster_im, c_frame)
+
+    card_masked = Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
+    card_masked.paste(poster_final, (0, 0), card_mask)
+    return card_masked
 
 def create_compilation_collage(items_or_urls, title_text, output_filename="compilation_collage.jpg"):
     """
     Downloads poster images and composites them into a single high-resolution,
-    aesthetically polished collage banner in 2+1, 2+2, or 3+2 grid layouts
-    on a luminous light colorful aurora background without header bar.
+    aesthetically polished collage banner in dark cyberpunk glassmorphism style,
+    matching the visual quality of AnimeVist episode release announcements.
     """
     os.makedirs(COLLAGE_DIR, exist_ok=True)
     out_path = os.path.join(COLLAGE_DIR, output_filename)
@@ -4453,7 +4783,7 @@ def create_compilation_collage(items_or_urls, title_text, output_filename="compi
         if isinstance(elem, dict):
             normalized_items.append(elem)
         else:
-            normalized_items.append({"poster": str(elem), "ru": "", "score": ""})
+            normalized_items.append({"poster": str(elem), "ru": "", "score": "", "genres": "Аниме"})
 
     images_and_items = []
     for it in normalized_items:
@@ -4461,8 +4791,8 @@ def create_compilation_collage(items_or_urls, title_text, output_filename="compi
         if not u:
             continue
         try:
-            req = urllib.request.Request(u, headers={'User-Agent': 'AnimeVistBot/1.0'})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            req = urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0 AnimeVistBot/2.0'})
+            with urllib.request.urlopen(req, timeout=12) as resp:
                 img = Image.open(io.BytesIO(resp.read())).convert("RGBA")
                 images_and_items.append((img, it))
         except Exception as e:
@@ -4473,192 +4803,63 @@ def create_compilation_collage(items_or_urls, title_text, output_filename="compi
 
     n = len(images_and_items)
 
-    # 2+1, 2+2, 3+2 layout configuration
+    # Grid layout configuration
     if n == 3:
         row1_count = 2
         row2_count = 1
-        cols = 2
-        card_w = 440
-        card_h = 620
-        gap = 24
+        card_w, card_h = 520, 720
+        gap = 26
     elif n == 4:
         row1_count = 2
         row2_count = 2
-        cols = 2
-        card_w = 440
-        card_h = 620
-        gap = 24
+        card_w, card_h = 520, 720
+        gap = 26
     elif n == 5:
         row1_count = 3
         row2_count = 2
-        cols = 3
-        card_w = 380
-        card_h = 535
+        card_w, card_h = 390, 550
         gap = 22
     else:
-        cols = (n + 1) // 2
-        row1_count = cols
-        row2_count = n - cols
-        card_w = 380
-        card_h = 535
-        gap = 22
+        row1_count = (n + 1) // 2
+        row2_count = n - row1_count
+        card_w, card_h = 440, 620
+        gap = 24
 
-    # Clean even outer padding (no header plate)
-    pad_x = 28
-    pad_y = 28
+    pad_x = 36
+    pad_top = 36
+    pad_bottom = 36
 
     row1_w = row1_count * card_w + (row1_count - 1) * gap
     total_w = pad_x * 2 + row1_w
-    total_h = pad_y * 2 + card_h * 2 + gap
+    total_h = pad_top + card_h * 2 + gap + pad_bottom
 
-    # Coordinates
     cards_coords = []
+    start_y = pad_top
     for i in range(row1_count):
-        cards_coords.append((pad_x + i * (card_w + gap), pad_y))
+        cards_coords.append((pad_x + i * (card_w + gap), start_y))
     row2_w = row2_count * card_w + (row2_count - 1) * gap
     row2_start_x = pad_x + (row1_w - row2_w) // 2
     for i in range(row2_count):
-        cards_coords.append((row2_start_x + i * (card_w + gap), pad_y + card_h + gap))
+        cards_coords.append((row2_start_x + i * (card_w + gap), start_y + card_h + gap))
 
-    # Beautiful light colorful background
-    canvas = create_light_colorful_background(total_w, total_h)
+    # Create dark cyberpunk canvas
+    canvas = create_cyberpunk_background(total_w, total_h)
 
-    # Rounded corner mask template for posters
-    scale = 2
-    r = 14
-    mask = Image.new("L", (card_w * scale, card_h * scale), 0)
-    draw_mask = ImageDraw.Draw(mask)
-    draw_mask.rounded_rectangle((0, 0, card_w * scale, card_h * scale), radius=r * scale, fill=255)
-    mask = mask.resize((card_w, card_h), Image.Resampling.LANCZOS)
-
-    # Composite cards
-    for idx, (raw_img, it) in enumerate(images_and_items, 1):
+    # 2. Render Anime Cards with Episode-Release Floating Plate Glassmorphism
+    r_card = 16
+    for idx, (raw_img, item) in enumerate(images_and_items, 1):
         if idx - 1 >= len(cards_coords):
             break
-        pos_x, pos_y = cards_coords[idx - 1]
+        cx, cy = cards_coords[idx - 1]
 
-        # 1. Soft realistic layered drop shadow on gradient background
-        shadow = Image.new("RGBA", (card_w + 24, card_h + 24), (0, 0, 0, 0))
-        s_draw = ImageDraw.Draw(shadow)
-        s_draw.rounded_rectangle((12, 12, card_w + 12, card_h + 12), radius=r + 2, fill=(10, 10, 20, 80))
-        shadow = shadow.filter(ImageFilter.GaussianBlur(14))
-        canvas.paste(shadow, (pos_x - 12, pos_y - 8), shadow)
+        card_masked = render_compilation_poster_card(raw_img, item, idx, card_w, card_h)
 
-        # 2. Resize and sharpen poster
-        resized = raw_img.resize((card_w, card_h), Image.Resampling.LANCZOS).convert("RGBA")
-        resized = resized.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=2))
+        c_shadow = Image.new("RGBA", (card_w + 30, card_h + 30), (0, 0, 0, 0))
+        ImageDraw.Draw(c_shadow).rounded_rectangle((15, 15, card_w + 15, card_h + 15), radius=r_card + 2, fill=(0, 0, 0, 210))
+        c_shadow = c_shadow.filter(ImageFilter.GaussianBlur(16))
 
-        # 3. Picture-frame border
-        border = Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
-        b_draw = ImageDraw.Draw(border)
-        b_draw.rounded_rectangle((0, 0, card_w - 1, card_h - 1), radius=r, outline=(255, 255, 255, 180), width=2)
-        card_with_border = Image.alpha_composite(resized, border)
-
-        # 4. Paste card with anti-aliased mask
-        card_masked = Image.new("RGBA", (card_w, card_h), (0, 0, 0, 0))
-        card_masked.paste(card_with_border, (0, 0), mask)
-        canvas.paste(card_masked, (pos_x, pos_y), card_masked)
-
-        # Rank tier colors
-        if idx == 1:
-            dot_color = (250, 204, 21, 255)      # Gold
-            border_color = (250, 204, 21, 220)
-            text_color = (254, 240, 138, 255)
-        elif idx == 2:
-            dot_color = (56, 189, 248, 255)     # Cyan
-            border_color = (56, 189, 248, 220)
-            text_color = (224, 242, 254, 255)
-        elif idx == 3:
-            dot_color = (244, 114, 182, 255)    # Rose
-            border_color = (244, 114, 182, 220)
-            text_color = (252, 231, 243, 255)
-        else:
-            dot_color = (129, 140, 248, 255)    # Indigo
-            border_color = (129, 140, 248, 180)
-            text_color = (241, 245, 249, 255)
-
-        # 5. Top-Left Rank Badge [ • 01 ] with font size matching title (17px / 16px)
-        font_size_title = 17 if card_w >= 400 else 16
-        font_badge = _get_font(font_size_title, bold=True)
-        num_str = f"{idx:02d}"
-
-        badge_h = 36
-        badge_w = 66
-        b_r = 9
-        badge = Image.new("RGBA", (badge_w, badge_h), (0, 0, 0, 0))
-        bd_draw = ImageDraw.Draw(badge)
-        bd_draw.rounded_rectangle((0, 0, badge_w - 1, badge_h - 1), radius=b_r, fill=(11, 15, 28, 235), outline=border_color, width=1)
-
-        dot_r = 4.0
-        dot_cx = 14
-        dot_cy = badge_h / 2
-        bd_draw.ellipse((dot_cx - dot_r, dot_cy - dot_r, dot_cx + dot_r, dot_cy + dot_r), fill=dot_color)
-
-        t_bbox = bd_draw.textbbox((0, 0), num_str, font=font_badge)
-        t_w = t_bbox[2] - t_bbox[0]
-        t_h = t_bbox[3] - t_bbox[1]
-        text_x = dot_cx + dot_r + (badge_w - (dot_cx + dot_r) - t_w) / 2
-        text_y = (badge_h - t_h) / 2 - 2
-        bd_draw.text((text_x, text_y), num_str, fill=text_color, font=font_badge)
-
-        b_shadow = Image.new("RGBA", (badge_w + 6, badge_h + 6), (0, 0, 0, 0))
-        bs_draw = ImageDraw.Draw(b_shadow)
-        bs_draw.rounded_rectangle((3, 3, badge_w + 3, badge_h + 3), radius=b_r, fill=(0, 0, 0, 160))
-        b_shadow = b_shadow.filter(ImageFilter.GaussianBlur(3))
-        canvas.paste(b_shadow, (pos_x + 9, pos_y + 9), b_shadow)
-        canvas.paste(badge, (pos_x + 12, pos_y + 12), badge)
-
-        # 6. Top-Right Title & Rating Badge
-        raw_ru = it.get('ru', '') or it.get('en', '')
-        score_val = str(it.get('score', ''))
-        if raw_ru or score_val:
-            max_chars = 20 if card_w >= 400 else 17
-            display_title = (raw_ru[:max_chars-2] + '..') if len(raw_ru) > max_chars else raw_ru
-            score_text = score_val if score_val else '—'
-
-            font_tr_title = _get_font(font_size_title, bold=True)
-            font_tr_score = _get_font(16 if card_w >= 400 else 15, bold=True)
-
-            dummy_draw = ImageDraw.Draw(canvas)
-            t_bbox = dummy_draw.textbbox((0, 0), display_title, font=font_tr_title)
-            title_w = t_bbox[2] - t_bbox[0]
-            s_bbox = dummy_draw.textbbox((0, 0), score_text, font=font_tr_score)
-            score_num_w = s_bbox[2] - s_bbox[0]
-            star_r_out = 7.2
-            star_r_in = 3.4
-            star_space = 22
-            score_w = score_num_w + star_space
-
-            pad_tr_x = 13
-            pad_tr_y = 8
-            content_w = max(title_w, score_w)
-            tr_w = content_w + pad_tr_x * 2
-            tr_h = 58
-            tr_r = 9
-
-            tr_x = pos_x + card_w - 12 - tr_w
-            tr_y = pos_y + 12
-
-            tr_badge = Image.new("RGBA", (tr_w, tr_h), (0, 0, 0, 0))
-            tr_draw = ImageDraw.Draw(tr_badge)
-            tr_draw.rounded_rectangle((0, 0, tr_w - 1, tr_h - 1), radius=tr_r, fill=(11, 15, 28, 235), outline=border_color, width=1)
-
-            # Title (right-aligned in badge)
-            tr_draw.text((tr_w - pad_tr_x - title_w, pad_tr_y), display_title, fill=(255, 255, 255, 255), font=font_tr_title)
-
-            # Vector Star + Rating (right-aligned in badge)
-            score_num_x = tr_w - pad_tr_x - score_num_w
-            star_cx = score_num_x - 12
-            star_cy = pad_tr_y + 32
-            draw_vector_star(tr_draw, star_cx, star_cy, r_outer=star_r_out, r_inner=star_r_in, color=(251, 191, 36, 255))
-            tr_draw.text((score_num_x, pad_tr_y + 24), score_text, fill=(251, 191, 36, 255), font=font_tr_score)
-
-            tr_shadow = Image.new("RGBA", (tr_w + 6, tr_h + 6), (0, 0, 0, 0))
-            trs_draw = ImageDraw.Draw(tr_shadow)
-            trs_draw.rounded_rectangle((3, 3, tr_w + 3, tr_h + 3), radius=tr_r, fill=(0, 0, 0, 160))
-            tr_shadow = tr_shadow.filter(ImageFilter.GaussianBlur(3))
-            canvas.paste(tr_shadow, (tr_x - 3, tr_y - 3), tr_shadow)
-            canvas.paste(tr_badge, (tr_x, tr_y), tr_badge)
+        canvas.paste(c_shadow, (cx - 15, cy - 10), c_shadow)
+        canvas.paste(card_masked, (cx, cy), card_masked)
 
     final_rgb = canvas.convert("RGB")
     final_rgb.save(out_path, "JPEG", quality=98, subsampling=0)
@@ -4728,7 +4929,22 @@ def select_unseen_anime(theme_key, count=4, refresh=False, cooldown_days=7):
     selected = available[:count]
     return selected
 
+THEME_ALIASES = {
+    'cyberpunk': 'cyberpunk_scifi',
+    'fantasy': 'epic_fantasy',
+    'isekai': 'isekai_special',
+    'psychological': 'mindfuck',
+    'romance': 'soul_romance',
+    'shonen': 'shonen_hype',
+    'detective': 'mindfuck',
+    'horror': 'dark_horror',
+    'comedy': 'pure_comedy',
+    'gems': 'hidden_gems',
+}
+
 def build_compilation_content(theme_key, count=4, refresh=False):
+    if theme_key:
+        theme_key = THEME_ALIASES.get(theme_key, theme_key)
     theme = THEMES.get(theme_key, THEMES['must_watch'])
     config = load_config()
     app_name = config.get('app', {}).get('name', 'AnimeVist')
@@ -4766,6 +4982,7 @@ def build_compilation_content(theme_key, count=4, refresh=False):
         lines.append("")
 
     lines.append(f"✨ <i>Смотрите эти тайтлы в приложении {app_name}!</i>")
+    lines.append(f"💬 <i>Какое аниме из подборки ваше любимое? Делитесь мнением в комментариях!</i>\n")
     lines.append(f"#подборка #топ_аниме {theme['tags']} #чтопосмотреть #{app_name.lower()}")
 
     caption = "\n".join(lines)
@@ -4774,31 +4991,29 @@ def build_compilation_content(theme_key, count=4, refresh=False):
         for idx, it in enumerate(items):
             em = emojis[idx] if idx < len(emojis) else f"{idx+1}."
             hk = it.get('hook', '')
-            if len(hk) > 75:
-                hk = hk[:73].rstrip() + '..'
+            if len(hk) > 70:
+                hk = hk[:68].rstrip() + '..'
             trim_lines.append(f"{em} <b>«{it['ru']}»</b> / <i>{it['en']}</i>")
             trim_lines.append(f"⭐️ <b>{it['score']}</b> | 🎭 {it['genres']}")
             trim_lines.append(f"📝 {hk}\n")
         trim_lines.append(f"✨ <i>Смотрите эти тайтлы в приложении {app_name}!</i>")
+        trim_lines.append(f"💬 <i>Какое аниме из подборки ваше любимое? Делитесь мнением в комментариях!</i>\n")
         trim_lines.append(f"#подборка #топ_аниме {theme['tags']} #чтопосмотреть #{app_name.lower()}")
         caption = "\n".join(trim_lines)
 
+    # Native Telegram channel comments: reply_markup must remain None
+    # so that Telegram automatically displays the native discussion comment bar
     reply_markup = None
-    show_chat = config.get('announcer', {}).get('show_chat_button', False)
-    chat_url = config.get('app', {}).get('chat_invite_url', '').strip()
-    if show_chat and chat_url and chat_url.startswith('http'):
-        reply_markup = {
-            "inline_keyboard": [
-                [{"text": "💬 Обсудить подборку в чате", "url": chat_url}]
-            ]
-        }
 
     return caption, poster_urls, reply_markup, items
 
-def get_compilation_preview(theme_key=None, count=4, refresh=True):
+def get_compilation_preview(theme_key=None, count=4, refresh=True, generate_collage=True):
     """
-    Returns structured preview data for web dashboard and client console.
+    Returns structured preview data for web dashboard and client console,
+    optionally rendering the HD collage for live preview.
     """
+    if theme_key:
+        theme_key = THEME_ALIASES.get(theme_key, theme_key)
     if not theme_key or theme_key == 'auto' or theme_key not in THEMES:
         theme_key = 'must_watch'
 
@@ -4810,22 +5025,33 @@ def get_compilation_preview(theme_key=None, count=4, refresh=True):
     theme = THEMES[theme_key]
     caption, poster_urls, reply_markup, items = build_compilation_content(theme_key, count=count, refresh=refresh)
 
+    collage_url = ""
+    if generate_collage and items:
+        clean_title = theme['title'].replace('🌟', '').replace('🏆', '').replace('🧠', '').replace('⚔️', '').replace('💖', '').replace('😂', '').replace('🌀', '').replace('💎', '').replace('🌆', '').strip()
+        collage_path = create_compilation_collage(items, f"ТОП-{len(items)}: {clean_title}")
+        if collage_path and os.path.exists(collage_path):
+            collage_url = "/scratch/compilation_collage.jpg"
+
     caption_html = caption.replace('\n', '<br>') if caption else ""
     return {
         "ok": True,
         "theme": theme_key,
+        "theme_key": theme_key,
         "title": theme['name'],
+        "theme_name": theme['name'],
         "desc": theme['desc'],
         "tags": theme['tags'],
         "count": len(items) if items else count,
         "items": items or [],
+        "animes": items or [],
         "caption": caption,
         "caption_html": caption_html,
-        "poster": poster_urls[0] if poster_urls else "",
+        "poster": collage_url or (poster_urls[0] if poster_urls else ""),
+        "collage_url": collage_url,
         "poster_urls": poster_urls or []
     }
 
-def run_compilation_post(genre_key=None, count=4, dry_run=False):
+def run_compilation_post(genre_key=None, count=4, dry_run=False, silent=False):
     sender = TelegramSender()
     try:
         count = max(3, min(5, int(count)))
@@ -4833,6 +5059,8 @@ def run_compilation_post(genre_key=None, count=4, dry_run=False):
         count = 4
 
     # Auto-pick next theme if not specified
+    if genre_key:
+        genre_key = THEME_ALIASES.get(genre_key, genre_key)
     if not genre_key or genre_key == 'auto' or genre_key not in THEMES:
         keys = list(THEMES.keys())
         idx = int(time.time() / 3600) % len(keys)
@@ -4859,7 +5087,7 @@ def run_compilation_post(genre_key=None, count=4, dry_run=False):
         print(f"Included {len(chosen_items)} anime: {[c['ru'] for c in chosen_items]}")
         return {"ok": True, "theme": genre_key, "count": len(chosen_items), "caption_length": len(caption), "dry_run": True}
 
-    res = sender.send_photo(poster_to_send, caption=caption, reply_markup=reply_markup)
+    res = sender.send_photo(poster_to_send, caption=caption, reply_markup=reply_markup, disable_notification=silent)
     if res.get('ok'):
         print(f"[Compilations] ✅ Успешно опубликована подборка: {theme['name']} ({len(chosen_items)} аниме)")
         # Save newly published anime IDs with current timestamp to enforce 7-day cooldown
@@ -4872,7 +5100,9 @@ def run_compilation_post(genre_key=None, count=4, dry_run=False):
         return {"ok": False, "theme": genre_key, "error": err}
 
 def list_available_themes():
-    return [{"key": k, "name": v["name"]} for k, v in THEMES.items()]
+    res = [{"key": "auto", "name": "🔄 Автоматический выбор (по очереди без повторов)"}]
+    res.extend([{"key": k, "name": v["name"]} for k, v in THEMES.items()])
+    return res
 
 def should_run_auto_compilation():
     config = load_config()
